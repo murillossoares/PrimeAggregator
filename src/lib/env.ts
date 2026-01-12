@@ -23,6 +23,7 @@ export function getEnv() {
   const executionStrategy = ExecutionStrategySchema.parse(process.env.EXECUTION_STRATEGY ?? 'atomic');
   const dryRunBuild = parseBoolean(process.env.DRY_RUN_BUILD, false);
   const dryRunSimulate = parseBoolean(process.env.DRY_RUN_SIMULATE, false);
+  const livePreflightSimulate = parseBoolean(process.env.LIVE_PREFLIGHT_SIMULATE, true);
   const logPath = process.env.LOG_PATH ?? './logs/events.jsonl';
   const baseFeeLamports = parseIntOr(process.env.BASE_FEE_LAMPORTS, 5000);
   const rentBufferLamports = parseIntOr(process.env.RENT_BUFFER_LAMPORTS, 0);
@@ -65,6 +66,7 @@ export function getEnv() {
     executionStrategy,
     dryRunBuild,
     dryRunSimulate,
+    livePreflightSimulate,
     logPath,
     baseFeeLamports,
     rentBufferLamports,

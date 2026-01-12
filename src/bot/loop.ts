@@ -20,6 +20,7 @@ export async function scanAndMaybeExecute(params: {
   executionStrategy: 'atomic' | 'sequential';
   dryRunBuild: boolean;
   dryRunSimulate: boolean;
+  livePreflightSimulate: boolean;
   logEvent: Logger;
   baseFeeLamports: number;
   rentBufferLamports: number;
@@ -83,6 +84,7 @@ export async function scanAndMaybeExecute(params: {
     executionStrategy: params.executionStrategy,
     dryRunBuild: params.dryRunBuild,
     dryRunSimulate: params.dryRunSimulate,
+    livePreflightSimulate: params.livePreflightSimulate,
     logEvent: params.logEvent,
     pair: params.pair,
     best: scan.best,

@@ -4,7 +4,7 @@ import bs58 from 'bs58';
 import type { BotPair } from '../lib/config.js';
 import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
-import { buildAtomicLoopTransaction } from './atomic.js';
+import { buildAtomicPathTransaction } from './atomic.js';
 import { getJitoTipAccountAddress, sendBundleViaJito } from './jitoSender.js';
 import type { Candidate } from './scanner.js';
 import type { LookupTableCache } from '../solana/lookupTableCache.js';
@@ -17,27 +17,56 @@ type ScanResult = {
 function formatDecisionLog(params: {
   pair: BotPair;
   amountA: string;
-  quote1: QuoteResponse;
-  quote2: QuoteResponse;
+  quotes: QuoteResponse[];
   feeEstimateLamports: string;
   profit: string;
   conservativeProfit: string;
   profitable: boolean;
 }) {
-  return {
+  const base = {
     ts: new Date().toISOString(),
     pair: params.pair.name,
     aMint: params.pair.aMint,
     bMint: params.pair.bMint,
+    cMint: params.pair.cMint,
     amountA: params.amountA,
-    outB: params.quote1.outAmount,
-    outBMin: params.quote1.otherAmountThreshold,
-    outA: params.quote2.outAmount,
-    outAMin: params.quote2.otherAmountThreshold,
     feeEstimateLamports: params.feeEstimateLamports,
     profit: params.profit,
     conservativeProfit: params.conservativeProfit,
     profitable: params.profitable,
+  };
+
+  if (params.quotes.length === 2) {
+    const [q1, q2] = params.quotes;
+    return {
+      ...base,
+      outB: q1?.outAmount,
+      outBMin: q1?.otherAmountThreshold,
+      outA: q2?.outAmount,
+      outAMin: q2?.otherAmountThreshold,
+    };
+  }
+
+  if (params.quotes.length === 3) {
+    const [q1, q2, q3] = params.quotes;
+    return {
+      ...base,
+      triangular: true,
+      outB: q1?.outAmount,
+      outBMin: q1?.otherAmountThreshold,
+      outC: q2?.outAmount,
+      outCMin: q2?.otherAmountThreshold,
+      outA: q3?.outAmount,
+      outAMin: q3?.otherAmountThreshold,
+    };
+  }
+
+  const last = params.quotes[params.quotes.length - 1];
+  return {
+    ...base,
+    legs: params.quotes.length,
+    outFinal: last?.outAmount,
+    outFinalMin: last?.otherAmountThreshold,
   };
 }
 
@@ -103,6 +132,7 @@ export async function executeCandidate(params: {
   executionStrategy: 'atomic' | 'sequential';
   dryRunBuild: boolean;
   dryRunSimulate: boolean;
+  livePreflightSimulate: boolean;
   logEvent: Logger;
   pair: BotPair;
   best: Candidate;
@@ -122,13 +152,17 @@ export async function executeCandidate(params: {
     return { kind: 'skipped', reason: 'not-profitable' };
   }
 
+  const decisionLogQuotes =
+    params.best.kind === 'triangular'
+      ? [params.best.quote1, params.best.quote2, params.best.quote3]
+      : [params.best.quote1, params.best.quote2];
+
   console.log(
     JSON.stringify(
       formatDecisionLog({
         pair: params.pair,
         amountA: params.best.amountA,
-        quote1: params.best.quote1 as QuoteResponse,
-        quote2: params.best.quote2 as QuoteResponse,
+        quotes: decisionLogQuotes as QuoteResponse[],
         feeEstimateLamports: params.best.feeEstimateLamports,
         profit: params.best.decision.profit,
         conservativeProfit: params.best.decision.conservativeProfit,
@@ -138,6 +172,9 @@ export async function executeCandidate(params: {
   );
 
   if (params.jupiter.kind === 'ultra') {
+    if (params.best.kind !== 'loop') {
+      throw new Error('Ultra execution only supports loop candidates');
+    }
     const o1 = params.best.quote1 as UltraOrderResponse;
     const o2 = params.best.quote2 as UltraOrderResponse;
 
@@ -175,8 +212,20 @@ export async function executeCandidate(params: {
     return { kind: 'executed' };
   }
 
-  const q1 = params.best.quote1 as QuoteResponse;
-  const q2 = params.best.quote2 as QuoteResponse;
+  if (params.best.kind === 'triangular' && params.executionStrategy !== 'atomic') {
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'skip',
+      pair: params.pair.name,
+      reason: 'triangular-requires-atomic',
+    });
+    return { kind: 'skipped', reason: 'triangular-requires-atomic' };
+  }
+
+  const quotes: QuoteResponse[] =
+    params.best.kind === 'triangular'
+      ? [params.best.quote1, params.best.quote2, params.best.quote3]
+      : [params.best.quote1 as QuoteResponse, params.best.quote2 as QuoteResponse];
 
   if (params.executionStrategy === 'atomic') {
     if (params.mode === 'live' && params.minBalanceLamports > 0) {
@@ -199,12 +248,11 @@ export async function executeCandidate(params: {
     const tipAccount =
       wantJito && tipLamports > 0 ? new PublicKey(getJitoTipAccountAddress(params.jitoTipAccount)) : undefined;
 
-    const built = await buildAtomicLoopTransaction({
+    const built = await buildAtomicPathTransaction({
       connection: params.connection,
       wallet: params.wallet,
       jupiter: params.jupiter,
-      leg1: q1,
-      leg2: q2,
+      legs: quotes,
       computeUnitLimit: params.computeUnitLimit,
       computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
       jitoTipLamports: tipAccount ? tipLamports : undefined,
@@ -225,6 +273,23 @@ export async function executeCandidate(params: {
     }
 
     const signature = bs58.encode(built.tx.signatures[0]);
+
+    if (params.livePreflightSimulate) {
+      const sim = await simulateSignedTx({ connection: params.connection, tx: built.tx });
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'preflight',
+        pair: params.pair.name,
+        signature,
+        err: sim.err,
+        unitsConsumed: sim.unitsConsumed,
+      });
+
+      if (sim.err) {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, preflight: false, err: sim.err }));
+        return { kind: 'skipped', reason: 'preflight-failed' };
+      }
+    }
 
     if (wantJito) {
       const sentAt = Date.now();
@@ -264,12 +329,11 @@ export async function executeCandidate(params: {
 
       if (shouldFallback) {
         // Rebuild without tip for RPC fallback.
-        const rebuilt = await buildAtomicLoopTransaction({
+        const rebuilt = await buildAtomicPathTransaction({
           connection: params.connection,
           wallet: params.wallet,
           jupiter: params.jupiter,
-          leg1: q1,
-          leg2: q2,
+          legs: quotes,
           computeUnitLimit: params.computeUnitLimit,
           computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
           lookupTableCache: params.lookupTableCache,
@@ -304,18 +368,39 @@ export async function executeCandidate(params: {
     return { kind: 'executed' };
   }
 
+  if (params.best.kind === 'triangular') {
+    throw new Error('triangular execution reached sequential path unexpectedly');
+  }
+
   const swap1 = await params.jupiter.buildSwapTransaction({
-    quote: q1,
+    quote: quotes[0],
     userPublicKey: params.wallet.publicKey.toBase58(),
     computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
   });
   const swap2 = await params.jupiter.buildSwapTransaction({
-    quote: q2,
+    quote: quotes[1],
     userPublicKey: params.wallet.publicKey.toBase58(),
     computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
   });
 
   if (params.mode === 'live') {
+    if (params.livePreflightSimulate) {
+      const sim1 = await simulateV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap1.swapTransaction });
+      const sim2 = await simulateV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap2.swapTransaction });
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'preflight',
+        pair: params.pair.name,
+        sequential: true,
+        sim1Err: sim1.err,
+        sim2Err: sim2.err,
+      });
+      if (sim1.err || sim2.err) {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, preflight: false, sequential: true, sim1Err: sim1.err, sim2Err: sim2.err }));
+        return { kind: 'skipped', reason: 'preflight-failed' };
+      }
+    }
+
     const sig1 = await signAndSendV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap1.swapTransaction, lastValidBlockHeight: swap1.lastValidBlockHeight });
     const sig2 = await signAndSendV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap2.swapTransaction, lastValidBlockHeight: swap2.lastValidBlockHeight });
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, sig1, sig2 }));

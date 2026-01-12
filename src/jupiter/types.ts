@@ -57,6 +57,8 @@ export type JupiterClient =
         outputMint: string;
         amount: string;
         slippageBps: number;
+        includeDexes?: string[];
+        excludeDexes?: string[];
       }): Promise<QuoteResponse>;
       buildSwapTransaction(params: {
         quote: QuoteResponse;

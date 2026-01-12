@@ -19,7 +19,9 @@ export function withJupiterQuoteCache(client: JupiterClient, ttlMs: number): Jup
     ...client,
     async quoteExactIn(params) {
       const now = Date.now();
-      const key = makeKey(params);
+      const includeDexes = params.includeDexes?.length ? params.includeDexes.slice().sort().join(',') : '';
+      const excludeDexes = params.excludeDexes?.length ? params.excludeDexes.slice().sort().join(',') : '';
+      const key = `${makeKey(params)}:include=${includeDexes}:exclude=${excludeDexes}`;
       const hit = cache.get(key);
       if (hit && hit.expiresAt > now) return await hit.value;
 
@@ -34,4 +36,3 @@ export function withJupiterQuoteCache(client: JupiterClient, ttlMs: number): Jup
     },
   };
 }
-

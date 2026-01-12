@@ -31,12 +31,17 @@ export async function fetchJson<T>(url: string, options: FetchJsonOptions = {}):
   }
 }
 
-export function withQuery(url: string, query: Record<string, string | undefined>) {
+export function withQuery(url: string, query: Record<string, string | readonly string[] | undefined>) {
   const u = new URL(url);
   for (const [k, v] of Object.entries(query)) {
     if (v === undefined) continue;
-    u.searchParams.set(k, v);
+    if (typeof v === 'string') {
+      u.searchParams.set(k, v);
+      continue;
+    }
+    for (const item of v) {
+      u.searchParams.append(k, item);
+    }
   }
   return u.toString();
 }
-

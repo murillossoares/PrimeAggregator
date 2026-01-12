@@ -85,23 +85,48 @@ export async function buildAtomicLoopTransaction(params: {
   jitoTipAccount?: PublicKey;
   lookupTableCache?: LookupTableCache;
 }) {
+  return await buildAtomicPathTransaction({
+    connection: params.connection,
+    wallet: params.wallet,
+    jupiter: params.jupiter,
+    legs: [params.leg1, params.leg2],
+    computeUnitLimit: params.computeUnitLimit,
+    computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
+    jitoTipLamports: params.jitoTipLamports,
+    jitoTipAccount: params.jitoTipAccount,
+    lookupTableCache: params.lookupTableCache,
+  });
+}
+
+export async function buildAtomicPathTransaction(params: {
+  connection: Connection;
+  wallet: Keypair;
+  jupiter: Extract<JupiterClient, { kind: 'swap-v1' }>;
+  legs: QuoteResponse[];
+  computeUnitLimit: number;
+  computeUnitPriceMicroLamports: number;
+  jitoTipLamports?: number;
+  jitoTipAccount?: PublicKey;
+  lookupTableCache?: LookupTableCache;
+}) {
   const userPublicKey = params.wallet.publicKey.toBase58();
 
-  const [i1, i2] = await Promise.all([
-    params.jupiter.buildSwapInstructions({
-      quote: params.leg1,
-      userPublicKey,
-      computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
-    }),
-    params.jupiter.buildSwapInstructions({
-      quote: params.leg2,
-      userPublicKey,
-      computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
-    }),
-  ]);
+  const legs = params.legs;
+  if (legs.length < 1) {
+    throw new Error('buildAtomicPathTransaction requires at least 1 leg');
+  }
 
-  const b1 = collectIxBundle(i1);
-  const b2 = collectIxBundle(i2);
+  const instructionResponses = await Promise.all(
+    legs.map((quote) =>
+      params.jupiter.buildSwapInstructions({
+        quote,
+        userPublicKey,
+        computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
+      }),
+    ),
+  );
+
+  const bundles = instructionResponses.map(collectIxBundle);
 
   // ComputeBudget has strict duplicate rules (only one of each type is allowed).
   // Because we combine two swaps, the per-leg dynamic budget from Jupiter can be too low,
@@ -118,12 +143,17 @@ export async function buildAtomicLoopTransaction(params: {
   }
 
   // "otherInstructions" may include de-dupe-sensitive instructions, so prefer leg1 only.
-  const other = b1.other;
+  const other = bundles[0]?.other ?? [];
 
-  const setup = uniqBy([...b1.setup, ...b2.setup], ixKey);
+  const setup = uniqBy(
+    bundles.flatMap((b) => b.setup),
+    ixKey,
+  );
+
+  const swaps = bundles.map((b) => b.swap);
 
   const cleanup = uniqBy(
-    [b1.cleanup, b2.cleanup].filter((x): x is TransactionInstruction => Boolean(x)),
+    bundles.map((b) => b.cleanup).filter((x): x is TransactionInstruction => Boolean(x)),
     ixKey,
   );
 
@@ -131,8 +161,7 @@ export async function buildAtomicLoopTransaction(params: {
     ...computeBudget,
     ...other,
     ...setup,
-    b1.swap,
-    b2.swap,
+    ...swaps,
     ...cleanup,
     ...(params.jitoTipLamports && params.jitoTipLamports > 0 && params.jitoTipAccount
       ? [
@@ -148,7 +177,7 @@ export async function buildAtomicLoopTransaction(params: {
 
   const lookupTableAccounts = await loadLookupTables(
     params.connection,
-    [...b1.alts, ...b2.alts],
+    bundles.flatMap((b) => b.alts),
     params.lookupTableCache,
   );
   const { blockhash, lastValidBlockHeight } = await params.connection.getLatestBlockhash('confirmed');
@@ -162,5 +191,5 @@ export async function buildAtomicLoopTransaction(params: {
   const tx = new VersionedTransaction(messageV0);
   tx.sign([params.wallet]);
 
-  return { tx, lookupTableAddresses: [...b1.alts, ...b2.alts], lastValidBlockHeight };
+  return { tx, lookupTableAddresses: bundles.flatMap((b) => b.alts), lastValidBlockHeight };
 }

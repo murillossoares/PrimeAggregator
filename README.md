@@ -61,6 +61,12 @@ Variaveis relevantes:
 - `DRY_RUN_BUILD=true` gera a transacao mesmo quando nao esta lucrativo.
 - `DRY_RUN_SIMULATE=true` simula a transacao e retorna logs/erros.
 
+## Live preflight (opcional)
+
+Quando `MODE=live`:
+
+- `LIVE_PREFLIGHT_SIMULATE=true` faz `simulateTransaction` e **so envia** se `sim.err == null` (evita queimar fee em tx que ja vai falhar).
+
 ## Logging
 
 - `LOG_PATH=./logs/events.jsonl` grava eventos em JSONL (startup, candidates, simulate, executed, etc).
@@ -70,9 +76,18 @@ Variaveis relevantes:
 Campos principais em `config.json`:
 
 - `amountA` (obrigatorio) e `amountASteps` (opcional) para testar varios tamanhos.
-- `slippageBps`, `minProfitA`, `cooldownMs`.
+- `slippageBps` (global), `slippageBpsLeg1` / `slippageBpsLeg2` / `slippageBpsLeg3` (opcional, por perna), `minProfitA`, `cooldownMs`.
+- `includeDexes` / `excludeDexes` (opcional) para filtrar venues no quote da Jupiter.
 - `computeUnitLimit`, `computeUnitPriceMicroLamports` (override por par).
 - `baseFeeLamports`, `rentBufferLamports` (override por par para custo estimado).
+
+### Triangular (A -> B -> C -> A)
+
+Se o par tiver `cMint`, o scanner faz 3 pernas:
+
+- `aMint -> bMint -> cMint -> aMint`
+
+Exemplo: `config.triangular.example.json`
 
 ## Ultra Swap (avaliacao rapida)
 

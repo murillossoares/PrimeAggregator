@@ -5,7 +5,8 @@ import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
 import { decideWithOptionalRust } from './rustDecision.js';
 
-export type Candidate = {
+export type LoopCandidate = {
+  kind: 'loop';
   amountA: string;
   quote1: QuoteResponse | UltraOrderResponse;
   quote2: QuoteResponse | UltraOrderResponse;
@@ -13,6 +14,19 @@ export type Candidate = {
   feeEstimateLamports: string;
   jitoTipLamports: number;
 };
+
+export type TriangularCandidate = {
+  kind: 'triangular';
+  amountA: string;
+  quote1: QuoteResponse;
+  quote2: QuoteResponse;
+  quote3: QuoteResponse;
+  decision: { profitable: boolean; profit: string; conservativeProfit: string };
+  feeEstimateLamports: string;
+  jitoTipLamports: number;
+};
+
+export type Candidate = LoopCandidate | TriangularCandidate;
 
 export type ScanSummary = {
   amountsTried: number;
@@ -83,7 +97,7 @@ function computeJitoTipLamports(params: {
   tipBps: number;
   pair: BotPair;
   amountA: string;
-  quote2MinOut: string;
+  finalMinOut: string;
 }): number {
   if (!params.jitoEnabled) return 0;
   if (params.fixedTipLamports <= 0 && params.jitoTipMode === 'fixed') return 0;
@@ -93,7 +107,7 @@ function computeJitoTipLamports(params: {
   // Dynamic tip is only safe to reason about for SOL-based loops, because the tip is paid in SOL.
   if (params.pair.aMint !== SOL_MINT) return Math.max(0, Math.floor(params.fixedTipLamports));
 
-  const gross = BigInt(params.quote2MinOut) - BigInt(params.amountA);
+  const gross = BigInt(params.finalMinOut) - BigInt(params.amountA);
   if (gross <= 0n) return 0;
 
   const raw = (gross * BigInt(params.tipBps)) / 10_000n;
@@ -104,6 +118,29 @@ function computeJitoTipLamports(params: {
   const asNumber = Number(clamped);
   if (!Number.isFinite(asNumber)) return Math.max(0, Math.floor(params.fixedTipLamports));
   return clampNumber(asNumber, 0, Math.max(0, Math.floor(params.maxTipLamports)));
+}
+
+function decidePathInTs(params: {
+  amountIn: string;
+  finalOut: string;
+  finalMinOut: string;
+  minProfit: string;
+  feeEstimateLamports: string;
+}) {
+  const amountIn = BigInt(params.amountIn);
+  const out = BigInt(params.finalOut);
+  const outMin = BigInt(params.finalMinOut);
+  const minProfit = BigInt(params.minProfit);
+  const feeEstimate = BigInt(params.feeEstimateLamports);
+
+  const profit = out - amountIn - feeEstimate;
+  const conservativeProfit = outMin - amountIn - feeEstimate;
+
+  return {
+    profitable: conservativeProfit >= minProfit,
+    profit: profit.toString(),
+    conservativeProfit: conservativeProfit.toString(),
+  };
 }
 
 export async function scanPair(params: {
@@ -131,6 +168,142 @@ export async function scanPair(params: {
     params.pair.computeUnitPriceMicroLamports ?? params.computeUnitPriceMicroLamports;
   const baseFeeLamports = params.pair.baseFeeLamports ?? params.baseFeeLamports;
   const rentBufferLamports = params.pair.rentBufferLamports ?? params.rentBufferLamports;
+  const slippageBpsLeg1 = params.pair.slippageBpsLeg1 ?? params.pair.slippageBps;
+  const slippageBpsLeg2 = params.pair.slippageBpsLeg2 ?? params.pair.slippageBps;
+  const slippageBpsLeg3 = params.pair.slippageBpsLeg3 ?? params.pair.slippageBps;
+
+  const includeDexes = params.pair.includeDexes;
+  const excludeDexes = params.pair.excludeDexes;
+
+  if (params.pair.cMint) {
+    if (params.jupiter.kind !== 'swap-v1') {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        reason: 'triangular-requires-swap-v1',
+      });
+      return {
+        amountsTried: amounts.length,
+        candidates: [],
+        best: undefined,
+        computeUnitLimit,
+        computeUnitPriceMicroLamports,
+        baseFeeLamports,
+        rentBufferLamports,
+      };
+    }
+
+    const candidates: Candidate[] = [];
+    for (const amountA of amounts) {
+      if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
+        continue;
+      }
+
+      try {
+        const quote1 = await params.jupiter.quoteExactIn({
+          inputMint: params.pair.aMint,
+          outputMint: params.pair.bMint,
+          amount: amountA,
+          slippageBps: slippageBpsLeg1,
+          includeDexes,
+          excludeDexes,
+        });
+
+        const quote2 = await params.jupiter.quoteExactIn({
+          inputMint: params.pair.bMint,
+          outputMint: params.pair.cMint,
+          amount: quote1.otherAmountThreshold,
+          slippageBps: slippageBpsLeg2,
+          includeDexes,
+          excludeDexes,
+        });
+
+        const quote3 = await params.jupiter.quoteExactIn({
+          inputMint: params.pair.cMint,
+          outputMint: params.pair.aMint,
+          amount: quote2.otherAmountThreshold,
+          slippageBps: slippageBpsLeg3,
+          includeDexes,
+          excludeDexes,
+        });
+
+        const jitoTipLamports = computeJitoTipLamports({
+          jitoEnabled: params.jitoEnabled,
+          jitoTipMode: params.jitoTipMode,
+          fixedTipLamports: params.jitoTipLamports,
+          minTipLamports: params.jitoMinTipLamports,
+          maxTipLamports: params.jitoMaxTipLamports,
+          tipBps: params.jitoTipBps,
+          pair: params.pair,
+          amountA,
+          finalMinOut: quote3.otherAmountThreshold,
+        });
+
+        const feeEstimateLamports = estimateFeeLamports({
+          baseFeeLamports,
+          rentBufferLamports,
+          computeUnitLimit,
+          computeUnitPriceMicroLamports,
+          jitoTipLamports,
+        });
+
+        const decision = decidePathInTs({
+          amountIn: amountA,
+          finalOut: quote3.outAmount,
+          finalMinOut: quote3.otherAmountThreshold,
+          minProfit: params.pair.minProfitA,
+          feeEstimateLamports,
+        });
+
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'candidate',
+          pair: params.pair.name,
+          triangular: true,
+          amountA,
+          includeDexes,
+          excludeDexes,
+          slippageBps: params.pair.slippageBps,
+          slippageBpsLeg1,
+          slippageBpsLeg2,
+          slippageBpsLeg3,
+          outB: quote1.outAmount,
+          outBMin: quote1.otherAmountThreshold,
+          outC: quote2.outAmount,
+          outCMin: quote2.otherAmountThreshold,
+          outA: quote3.outAmount,
+          outAMin: quote3.otherAmountThreshold,
+          feeEstimateLamports,
+          jitoTipLamports,
+          profit: decision.profit,
+          conservativeProfit: decision.conservativeProfit,
+          profitable: decision.profitable,
+        });
+
+        candidates.push({ kind: 'triangular', amountA, quote1, quote2, quote3, decision, feeEstimateLamports, jitoTipLamports });
+      } catch (error) {
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'candidate_error',
+          pair: params.pair.name,
+          triangular: true,
+          amountA,
+          error: String(error),
+        });
+      }
+    }
+
+    return {
+      amountsTried: amounts.length,
+      candidates,
+      best: pickBestCandidate(candidates),
+      computeUnitLimit,
+      computeUnitPriceMicroLamports,
+      baseFeeLamports,
+      rentBufferLamports,
+    };
+  }
 
   const candidates: Candidate[] = [];
   for (const amountA of amounts) {
@@ -145,7 +318,9 @@ export async function scanPair(params: {
               inputMint: params.pair.aMint,
               outputMint: params.pair.bMint,
               amount: amountA,
-              slippageBps: params.pair.slippageBps,
+              slippageBps: slippageBpsLeg1,
+              includeDexes,
+              excludeDexes,
             })
           : await params.jupiter.order({
               inputMint: params.pair.aMint,
@@ -161,7 +336,9 @@ export async function scanPair(params: {
               inputMint: params.pair.bMint,
               outputMint: params.pair.aMint,
               amount: quote1OutMin,
-              slippageBps: params.pair.slippageBps,
+              slippageBps: slippageBpsLeg2,
+              includeDexes,
+              excludeDexes,
             })
           : await params.jupiter.order({
               inputMint: params.pair.bMint,
@@ -179,7 +356,7 @@ export async function scanPair(params: {
         tipBps: params.jitoTipBps,
         pair: params.pair,
         amountA,
-        quote2MinOut: quote2.otherAmountThreshold,
+        finalMinOut: quote2.otherAmountThreshold,
       });
 
       const feeEstimateLamports = estimateFeeLamports({
@@ -207,7 +384,11 @@ export async function scanPair(params: {
         type: 'candidate',
         pair: params.pair.name,
         amountA,
+        includeDexes,
+        excludeDexes,
         slippageBps: params.pair.slippageBps,
+        slippageBpsLeg1,
+        slippageBpsLeg2,
         feeEstimateLamports,
         jitoTipLamports,
         profit: decision.profit,
@@ -215,7 +396,7 @@ export async function scanPair(params: {
         profitable: decision.profitable,
       });
 
-      candidates.push({ amountA, quote1, quote2, decision, feeEstimateLamports, jitoTipLamports });
+      candidates.push({ kind: 'loop', amountA, quote1, quote2, decision, feeEstimateLamports, jitoTipLamports });
     } catch (error) {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -237,4 +418,3 @@ export async function scanPair(params: {
     rentBufferLamports,
   };
 }
-

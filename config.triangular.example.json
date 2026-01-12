@@ -1,19 +1,18 @@
 {
   "pairs": [
     {
-      "name": "SOL/USDC loop",
+      "name": "SOL/USDC/<TOKEN> triangle",
       "aMint": "So11111111111111111111111111111111111111112",
       "bMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "cMint": "<REPLACE_WITH_MINT>",
       "amountA": "1000000",
       "amountASteps": ["500000", "1000000", "2000000"],
       "slippageBps": 50,
       "slippageBpsLeg2": 100,
+      "slippageBpsLeg3": 100,
       "minProfitA": "10000",
-      "cooldownMs": 1500,
-      "computeUnitLimit": 1400000,
-      "computeUnitPriceMicroLamports": 0,
-      "baseFeeLamports": 5000,
-      "rentBufferLamports": 0
+      "cooldownMs": 1500
     }
   ]
 }
+

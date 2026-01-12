@@ -104,6 +104,7 @@ async function main() {
           executionStrategy: env.executionStrategy,
           dryRunBuild: env.dryRunBuild,
           dryRunSimulate: env.dryRunSimulate,
+          livePreflightSimulate: env.livePreflightSimulate,
           logEvent,
           baseFeeLamports: env.baseFeeLamports,
           rentBufferLamports: env.rentBufferLamports,

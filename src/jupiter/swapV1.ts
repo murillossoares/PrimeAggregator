@@ -8,6 +8,8 @@ export function makeJupiterSwapV1Client(baseUrl: string, apiKey: string) {
     outputMint: string;
     amount: string;
     slippageBps: number;
+    includeDexes?: string[];
+    excludeDexes?: string[];
   }) =>
     withQuery(`${baseUrl.replace(/\/$/, '')}/swap/v1/quote`, {
       inputMint: params.inputMint,
@@ -16,6 +18,8 @@ export function makeJupiterSwapV1Client(baseUrl: string, apiKey: string) {
       slippageBps: String(params.slippageBps),
       swapMode: 'ExactIn',
       onlyDirectRoutes: 'false',
+      includeDexes: params.includeDexes?.length ? params.includeDexes : undefined,
+      excludeDexes: params.excludeDexes?.length ? params.excludeDexes : undefined,
     });
 
   async function quoteExactIn(params: {
@@ -23,6 +27,8 @@ export function makeJupiterSwapV1Client(baseUrl: string, apiKey: string) {
     outputMint: string;
     amount: string;
     slippageBps: number;
+    includeDexes?: string[];
+    excludeDexes?: string[];
   }): Promise<QuoteResponse> {
     return await fetchJson<QuoteResponse>(quoteUrl(params), { headers });
   }
