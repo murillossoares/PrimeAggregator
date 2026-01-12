@@ -76,7 +76,7 @@ async function loadLookupTables(
 export async function buildAtomicLoopTransaction(params: {
   connection: Connection;
   wallet: Keypair;
-  jupiter: Extract<JupiterClient, { kind: 'swap-v1' }>;
+  jupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   leg1: QuoteResponse;
   leg2: QuoteResponse;
   computeUnitLimit: number;
@@ -101,7 +101,7 @@ export async function buildAtomicLoopTransaction(params: {
 export async function buildAtomicPathTransaction(params: {
   connection: Connection;
   wallet: Keypair;
-  jupiter: Extract<JupiterClient, { kind: 'swap-v1' }>;
+  jupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   legs: QuoteResponse[];
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;

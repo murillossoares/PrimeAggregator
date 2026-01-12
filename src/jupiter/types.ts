@@ -72,6 +72,28 @@ export type JupiterClient =
       }): Promise<SwapInstructionsResponse>;
     }
   | {
+      // Metis extends Jupiter Swap v6 API: /quote, /swap, /swap-instructions
+      kind: 'v6';
+      quoteExactIn(params: {
+        inputMint: string;
+        outputMint: string;
+        amount: string;
+        slippageBps: number;
+        includeDexes?: string[];
+        excludeDexes?: string[];
+      }): Promise<QuoteResponse>;
+      buildSwapTransaction(params: {
+        quote: QuoteResponse;
+        userPublicKey: string;
+        computeUnitPriceMicroLamports?: number;
+      }): Promise<SwapTransactionResponse>;
+      buildSwapInstructions(params: {
+        quote: QuoteResponse;
+        userPublicKey: string;
+        computeUnitPriceMicroLamports?: number;
+      }): Promise<SwapInstructionsResponse>;
+    }
+  | {
       kind: 'ultra';
       order(params: {
         inputMint: string;

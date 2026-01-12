@@ -12,6 +12,7 @@ import { createJsonlLogger } from './lib/logger.js';
 import { setupWalletTokenAccounts } from './solana/setupWallet.js';
 import { forEachLimit } from './lib/concurrency.js';
 import { LookupTableCache } from './solana/lookupTableCache.js';
+import { PriorityFeeEstimator } from './solana/priorityFees.js';
 
 function parseArgs(argv: string[]) {
   const args = new Set(argv.slice(2));
@@ -26,10 +27,25 @@ async function main() {
   const env = getEnv();
 
   const config = await loadConfig(env.configPath);
-  const connection = makeConnection(env.solanaRpcUrl);
+  const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
   const logEvent = createJsonlLogger(env.logPath);
+  const priorityFeeEstimator = new PriorityFeeEstimator({
+    strategy: env.priorityFeeStrategy,
+    level: env.priorityFeeLevel,
+    refreshMs: env.priorityFeeRefreshMs,
+    maxMicroLamports: env.priorityFeeMaxMicroLamports,
+    heliusApiKey: env.heliusApiKey,
+    heliusRpcUrl: env.heliusRpcUrl,
+    targetAccountLimit: env.priorityFeeTargetAccountLimit,
+  });
+
+  const allowPriorityFees = !(env.jitoEnabled && !env.priorityFeeWithJito);
+  let dynamicComputeUnitPriceMicroLamports = allowPriorityFees ? env.computeUnitPriceMicroLamports : 0;
+  if (allowPriorityFees && dynamicComputeUnitPriceMicroLamports === 0 && env.priorityFeeStrategy !== 'off') {
+    dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
+  }
 
   const jupiter = makeJupiterClient({
     swapBaseUrl: env.jupSwapBaseUrl,
@@ -50,6 +66,11 @@ async function main() {
         pubkey: wallet.publicKey.toBase58(),
         balanceLamports,
         pairConcurrency: env.pairConcurrency,
+        solanaCommitment: env.solanaCommitment,
+        solanaWs: Boolean(env.solanaWsUrl),
+        priorityFeeStrategy: env.priorityFeeStrategy,
+        priorityFeeLevel: env.priorityFeeLevel,
+        computeUnitPriceMicroLamports: dynamicComputeUnitPriceMicroLamports,
       },
       null,
       2,
@@ -64,6 +85,8 @@ async function main() {
     pairs: config.pairs.length,
     pubkey: wallet.publicKey.toBase58(),
     balanceLamports,
+    solanaCommitment: env.solanaCommitment,
+    solanaWs: Boolean(env.solanaWsUrl),
   });
 
   if (args.setupWallet) {
@@ -94,6 +117,10 @@ async function main() {
       return !(nextAllowedAt && now < nextAllowedAt);
     });
 
+    if (allowPriorityFees && env.computeUnitPriceMicroLamports === 0 && env.priorityFeeStrategy !== 'off') {
+      dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
+    }
+
     await forEachLimit(eligiblePairs, env.pairConcurrency, async (pair) => {
       try {
         const result = await scanAndMaybeExecute({
@@ -109,7 +136,7 @@ async function main() {
           baseFeeLamports: env.baseFeeLamports,
           rentBufferLamports: env.rentBufferLamports,
           computeUnitLimit: env.computeUnitLimit,
-          computeUnitPriceMicroLamports: env.computeUnitPriceMicroLamports,
+          computeUnitPriceMicroLamports: dynamicComputeUnitPriceMicroLamports,
           jitoEnabled: env.jitoEnabled,
           jitoBlockEngineUrl: env.jitoBlockEngineUrl,
           jitoTipLamports: env.jitoTipLamports,

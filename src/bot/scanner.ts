@@ -176,12 +176,12 @@ export async function scanPair(params: {
   const excludeDexes = params.pair.excludeDexes;
 
   if (params.pair.cMint) {
-    if (params.jupiter.kind !== 'swap-v1') {
+    if (params.jupiter.kind === 'ultra') {
       await params.logEvent({
         ts: new Date().toISOString(),
         type: 'skip',
         pair: params.pair.name,
-        reason: 'triangular-requires-swap-v1',
+        reason: 'triangular-requires-quote-api',
       });
       return {
         amountsTried: amounts.length,
@@ -311,41 +311,41 @@ export async function scanPair(params: {
       continue;
     }
 
-    try {
-      const quote1: QuoteResponse | UltraOrderResponse =
-        params.jupiter.kind === 'swap-v1'
-          ? await params.jupiter.quoteExactIn({
-              inputMint: params.pair.aMint,
-              outputMint: params.pair.bMint,
-              amount: amountA,
-              slippageBps: slippageBpsLeg1,
-              includeDexes,
-              excludeDexes,
-            })
-          : await params.jupiter.order({
-              inputMint: params.pair.aMint,
-              outputMint: params.pair.bMint,
-              amount: amountA,
-              taker: params.wallet.publicKey.toBase58(),
-            });
+      try {
+        const quote1: QuoteResponse | UltraOrderResponse =
+          params.jupiter.kind === 'ultra'
+            ? await params.jupiter.order({
+                inputMint: params.pair.aMint,
+                outputMint: params.pair.bMint,
+                amount: amountA,
+                taker: params.wallet.publicKey.toBase58(),
+              })
+            : await params.jupiter.quoteExactIn({
+                inputMint: params.pair.aMint,
+                outputMint: params.pair.bMint,
+                amount: amountA,
+                slippageBps: slippageBpsLeg1,
+                includeDexes,
+                excludeDexes,
+              });
 
-      const quote1OutMin = quote1.otherAmountThreshold;
-      const quote2: QuoteResponse | UltraOrderResponse =
-        params.jupiter.kind === 'swap-v1'
-          ? await params.jupiter.quoteExactIn({
-              inputMint: params.pair.bMint,
-              outputMint: params.pair.aMint,
-              amount: quote1OutMin,
-              slippageBps: slippageBpsLeg2,
-              includeDexes,
-              excludeDexes,
-            })
-          : await params.jupiter.order({
-              inputMint: params.pair.bMint,
-              outputMint: params.pair.aMint,
-              amount: quote1OutMin,
-              taker: params.wallet.publicKey.toBase58(),
-            });
+        const quote1OutMin = quote1.otherAmountThreshold;
+        const quote2: QuoteResponse | UltraOrderResponse =
+          params.jupiter.kind === 'ultra'
+            ? await params.jupiter.order({
+                inputMint: params.pair.bMint,
+                outputMint: params.pair.aMint,
+                amount: quote1OutMin,
+                taker: params.wallet.publicKey.toBase58(),
+              })
+            : await params.jupiter.quoteExactIn({
+                inputMint: params.pair.bMint,
+                outputMint: params.pair.aMint,
+                amount: quote1OutMin,
+                slippageBps: slippageBpsLeg2,
+                includeDexes,
+                excludeDexes,
+              });
 
       const jitoTipLamports = computeJitoTipLamports({
         jitoEnabled: params.jitoEnabled,

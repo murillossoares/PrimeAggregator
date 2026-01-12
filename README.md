@@ -18,6 +18,34 @@ Bot de arbitragem (MVP) focado em Jupiter. Faz loop `A -> B -> A`, com execucao 
 
 3) Copie `config.example.json` para `config.json` e ajuste `pairs`.
 
+## Helius / QuickNode (alto impacto)
+
+### RPC privado + WebSocket
+
+- Troque `SOLANA_RPC_URL` para seu endpoint (Helius/QuickNode).
+- (Recomendado) Defina `SOLANA_WS_URL` para reduzir latencia em confirmacoes/subscriptions.
+- `SOLANA_COMMITMENT=processed|confirmed|finalized` (em arbitragem, `processed` costuma ser o mais rapido).
+
+### QuickNode Metis (Jupiter privado)
+
+Se voce usa o add-on Metis da QuickNode (router privado da Jupiter), a integracao aqui eh so trocar o endpoint:
+
+- `JUP_SWAP_BASE_URL=<METIS_URL>`
+
+Se seu endpoint nao exigir `x-api-key`, `JUP_API_KEY` pode ficar vazio. O `https://api.jup.ag` exige.
+
+### Priority fee dinamica (opcional)
+
+Para usar fee dinamica (compute unit price):
+
+- Mantenha `COMPUTE_UNIT_PRICE_MICRO_LAMPORTS=0` (para permitir override dinamico).
+- Escolha um provider:
+  - `PRIORITY_FEE_STRATEGY=rpc-recent` (padrao Solana; funciona em qualquer RPC)
+  - `PRIORITY_FEE_STRATEGY=helius` + `HELIUS_API_KEY` (usa `getPriorityFeeEstimate`, com fallback para `rpc-recent`)
+- Ajuste `PRIORITY_FEE_LEVEL`, `PRIORITY_FEE_REFRESH_MS` e `PRIORITY_FEE_MAX_MICRO_LAMPORTS` se necessario.
+
+Se `JITO_ENABLED=true`, por padrao o bot nao paga priority fee (usa tip). Para habilitar junto com Jito: `PRIORITY_FEE_WITH_JITO=true`.
+
 ## Rodar
 
 - Dev: `npm.cmd run dev`

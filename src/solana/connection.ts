@@ -1,8 +1,8 @@
-import { Connection } from '@solana/web3.js';
+import { Connection, type Commitment } from '@solana/web3.js';
 
-export function makeConnection(rpcUrl: string) {
-  return new Connection(rpcUrl, {
-    commitment: 'confirmed',
+export function makeConnection(params: { rpcUrl: string; wsUrl?: string; commitment: Commitment }) {
+  return new Connection(params.rpcUrl, {
+    commitment: params.commitment,
+    wsEndpoint: params.wsUrl,
   });
 }
-

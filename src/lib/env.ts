@@ -3,6 +3,9 @@ import { z } from 'zod';
 const ModeSchema = z.enum(['dry-run', 'live']);
 const ExecutionStrategySchema = z.enum(['atomic', 'sequential']);
 const JitoTipModeSchema = z.enum(['fixed', 'dynamic']);
+const PriorityFeeStrategySchema = z.enum(['off', 'rpc-recent', 'helius']);
+const PriorityFeeLevelSchema = z.enum(['min', 'low', 'medium', 'high', 'veryHigh', 'unsafeMax', 'recommended']);
+const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -24,6 +27,14 @@ export function getEnv() {
   const dryRunBuild = parseBoolean(process.env.DRY_RUN_BUILD, false);
   const dryRunSimulate = parseBoolean(process.env.DRY_RUN_SIMULATE, false);
   const livePreflightSimulate = parseBoolean(process.env.LIVE_PREFLIGHT_SIMULATE, true);
+  const priorityFeeStrategy = PriorityFeeStrategySchema.parse(process.env.PRIORITY_FEE_STRATEGY ?? 'off');
+  const priorityFeeLevel = PriorityFeeLevelSchema.parse(process.env.PRIORITY_FEE_LEVEL ?? 'recommended');
+  const priorityFeeRefreshMs = parseIntOr(process.env.PRIORITY_FEE_REFRESH_MS, 1000);
+  const priorityFeeMaxMicroLamports = parseIntOr(process.env.PRIORITY_FEE_MAX_MICRO_LAMPORTS, 50_000_000);
+  const priorityFeeTargetAccountLimit = parseIntOr(process.env.PRIORITY_FEE_TARGET_ACCOUNT_LIMIT, 16);
+  const priorityFeeWithJito = parseBoolean(process.env.PRIORITY_FEE_WITH_JITO, false);
+  const heliusApiKey = process.env.HELIUS_API_KEY;
+  const heliusRpcUrl = process.env.HELIUS_RPC_URL;
   const logPath = process.env.LOG_PATH ?? './logs/events.jsonl';
   const baseFeeLamports = parseIntOr(process.env.BASE_FEE_LAMPORTS, 5000);
   const rentBufferLamports = parseIntOr(process.env.RENT_BUFFER_LAMPORTS, 0);
@@ -48,6 +59,8 @@ export function getEnv() {
   const jitoTipAccount = process.env.JITO_TIP_ACCOUNT;
 
   const solanaRpcUrl = z.string().min(1).parse(process.env.SOLANA_RPC_URL);
+  const solanaWsUrl = process.env.SOLANA_WS_URL;
+  const solanaCommitment = SolanaCommitmentSchema.parse(process.env.SOLANA_COMMITMENT ?? 'confirmed');
   const walletSecretKey = z.string().min(1).parse(process.env.WALLET_SECRET_KEY);
 
   const configPath = process.env.CONFIG_PATH ?? './config.json';
@@ -67,6 +80,14 @@ export function getEnv() {
     dryRunBuild,
     dryRunSimulate,
     livePreflightSimulate,
+    priorityFeeStrategy,
+    priorityFeeLevel,
+    priorityFeeRefreshMs,
+    priorityFeeMaxMicroLamports,
+    priorityFeeTargetAccountLimit,
+    priorityFeeWithJito,
+    heliusApiKey,
+    heliusRpcUrl,
     logPath,
     baseFeeLamports,
     rentBufferLamports,
@@ -90,6 +111,8 @@ export function getEnv() {
     jitoFallbackRpc,
     jitoTipAccount,
     solanaRpcUrl,
+    solanaWsUrl,
+    solanaCommitment,
     walletSecretKey,
     configPath,
     pollIntervalMs,
