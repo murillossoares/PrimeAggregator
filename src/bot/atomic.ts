@@ -4,11 +4,13 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
 import type { JupiterClient, JupiterInstruction, QuoteResponse, SwapInstructionsResponse } from '../jupiter/types.js';
+import type { LookupTableCache } from '../solana/lookupTableCache.js';
 
 function toTxInstruction(ix: JupiterInstruction): TransactionInstruction {
   return new TransactionInstruction({
@@ -55,7 +57,12 @@ function collectIxBundle(res: SwapInstructionsResponse) {
 async function loadLookupTables(
   connection: Connection,
   addresses: string[],
+  lookupTableCache?: LookupTableCache,
 ): Promise<AddressLookupTableAccount[]> {
+  if (lookupTableCache) {
+    return await lookupTableCache.getMany(connection, addresses);
+  }
+
   const unique = uniqBy(addresses, (a) => a);
   const accounts: AddressLookupTableAccount[] = [];
   for (const addr of unique) {
@@ -74,6 +81,9 @@ export async function buildAtomicLoopTransaction(params: {
   leg2: QuoteResponse;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
+  jitoTipLamports?: number;
+  jitoTipAccount?: PublicKey;
+  lookupTableCache?: LookupTableCache;
 }) {
   const userPublicKey = params.wallet.publicKey.toBase58();
 
@@ -124,9 +134,23 @@ export async function buildAtomicLoopTransaction(params: {
     b1.swap,
     b2.swap,
     ...cleanup,
+    ...(params.jitoTipLamports && params.jitoTipLamports > 0 && params.jitoTipAccount
+      ? [
+          // Prefer tipping after cleanup so WSOL CloseAccount can refund lamports back to payer first.
+          SystemProgram.transfer({
+            fromPubkey: params.wallet.publicKey,
+            toPubkey: params.jitoTipAccount,
+            lamports: params.jitoTipLamports,
+          }),
+        ]
+      : []),
   ];
 
-  const lookupTableAccounts = await loadLookupTables(params.connection, [...b1.alts, ...b2.alts]);
+  const lookupTableAccounts = await loadLookupTables(
+    params.connection,
+    [...b1.alts, ...b2.alts],
+    params.lookupTableCache,
+  );
   const { blockhash, lastValidBlockHeight } = await params.connection.getLatestBlockhash('confirmed');
 
   const messageV0 = new TransactionMessage({

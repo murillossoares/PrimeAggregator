@@ -1,5 +1,43 @@
-import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, NATIVE_MINT } from '@solana/spl-token';
-import { Connection, Keypair, PublicKey, Transaction } from '@solana/web3.js';
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from '@solana/web3.js';
+
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+
+function getAssociatedTokenAddressSync(mint: PublicKey, owner: PublicKey): PublicKey {
+  const [ata] = PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  return ata;
+}
+
+function createAssociatedTokenAccountIdempotentInstruction(params: {
+  payer: PublicKey;
+  ata: PublicKey;
+  owner: PublicKey;
+  mint: PublicKey;
+}): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: params.payer, isSigner: true, isWritable: true },
+      { pubkey: params.ata, isSigner: false, isWritable: true },
+      { pubkey: params.owner, isSigner: false, isWritable: false },
+      { pubkey: params.mint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from([1]),
+  });
+}
 
 function chunk<T>(items: T[], size: number) {
   const out: T[][] = [];
@@ -21,12 +59,12 @@ export async function setupWalletTokenAccounts(params: {
 
   const instructions = mints.map((mint) => {
     const ata = getAssociatedTokenAddressSync(mint, params.wallet.publicKey);
-    return createAssociatedTokenAccountIdempotentInstruction(
-      params.wallet.publicKey,
+    return createAssociatedTokenAccountIdempotentInstruction({
+      payer: params.wallet.publicKey,
       ata,
-      params.wallet.publicKey,
+      owner: params.wallet.publicKey,
       mint,
-    );
+    });
   });
 
   if (instructions.length === 0) {

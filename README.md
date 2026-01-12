@@ -30,10 +30,31 @@ Cria ATAs idempotentes para os mints em `config.json`:
 
 - `npm.cmd run dev -- --setup-wallet`
 
+Opcional (apenas `MODE=live`): rodar automaticamente no startup:
+
+- `AUTO_SETUP_WALLET=true`
+
 ## Execucao atomica
 
 - `EXECUTION_STRATEGY=atomic` usa `POST /swap/v1/swap-instructions` e monta uma unica `VersionedTransaction` com 2 pernas.
 - A 2a perna usa `otherAmountThreshold` da 1a (conservador). Se a 1a perna retornar mais, sobra token intermediario na ATA.
+
+## Jito (opcional, MODE=live)
+
+Quando `JITO_ENABLED=true`, no modo `atomic` o bot:
+
+- Inclui um tip (`SystemProgram.transfer`) para uma conta de tip do Jito **na mesma transacao** (evita pagar tip se a tx falhar).
+- Envia a transacao via Block Engine usando `jito-ts` (bundle com 1 tx).
+
+Variaveis relevantes:
+
+- `JITO_BLOCK_ENGINE_URL` (ex: `https://amsterdam.mainnet.block-engine.jito.wtf`)
+- `JITO_TIP_MODE=fixed|dynamic`
+- `JITO_TIP_LAMPORTS` (modo fixed; minimo recomendado: 1000)
+- `JITO_MIN_TIP_LAMPORTS`, `JITO_MAX_TIP_LAMPORTS`, `JITO_TIP_BPS` (modo dynamic; so faz sentido quando `aMint` eh SOL)
+- `JITO_TIP_ACCOUNT` (opcional; se vazio, escolhe uma conta padrao aleatoria)
+- `JITO_WAIT_MS` (aguarda resultado do bundle via stream; 0 = nao aguarda)
+- `JITO_FALLBACK_RPC` (se true e o bundle for rejeitado/dropped, refaz a tx sem tip e envia via RPC)
 
 ## Dry-run
 
@@ -63,3 +84,11 @@ Campos principais em `config.json`:
 
 - Nunca commite sua private key.
 - Use `MODE=dry-run` ate validar simulacao/execucao em valores baixos.
+
+## Performance/operacao
+
+- `PAIR_CONCURRENCY` paraleliza o scan entre pares.
+- `QUOTE_CACHE_TTL_MS` cache curto de quotes (Swap v1).
+- `LUT_CACHE_TTL_MS` cache de Address Lookup Tables para acelerar builds atomicos.
+- `MIN_BALANCE_LAMPORTS` evita tentar execucao sem saldo suficiente.
+- `MAX_ERRORS_BEFORE_EXIT` / `MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT` mata o processo se ficar instavel (0 = desativado).

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const ModeSchema = z.enum(['dry-run', 'live']);
 const ExecutionStrategySchema = z.enum(['atomic', 'sequential']);
+const JitoTipModeSchema = z.enum(['fixed', 'dynamic']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -27,6 +28,23 @@ export function getEnv() {
   const rentBufferLamports = parseIntOr(process.env.RENT_BUFFER_LAMPORTS, 0);
   const computeUnitLimit = parseIntOr(process.env.COMPUTE_UNIT_LIMIT, 1_400_000);
   const computeUnitPriceMicroLamports = parseIntOr(process.env.COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, 0);
+  const quoteCacheTtlMs = parseIntOr(process.env.QUOTE_CACHE_TTL_MS, 250);
+  const lutCacheTtlMs = parseIntOr(process.env.LUT_CACHE_TTL_MS, 60_000);
+  const pairConcurrency = parseIntOr(process.env.PAIR_CONCURRENCY, 2);
+  const minBalanceLamports = parseIntOr(process.env.MIN_BALANCE_LAMPORTS, 0);
+  const maxErrorsBeforeExit = parseIntOr(process.env.MAX_ERRORS_BEFORE_EXIT, 0);
+  const maxConsecutiveErrorsBeforeExit = parseIntOr(process.env.MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT, 0);
+  const autoSetupWallet = parseBoolean(process.env.AUTO_SETUP_WALLET, false);
+  const jitoEnabled = parseBoolean(process.env.JITO_ENABLED, false);
+  const jitoBlockEngineUrl = process.env.JITO_BLOCK_ENGINE_URL ?? 'https://amsterdam.mainnet.block-engine.jito.wtf';
+  const jitoTipLamports = parseIntOr(process.env.JITO_TIP_LAMPORTS, 10_000);
+  const jitoTipMode = JitoTipModeSchema.parse(process.env.JITO_TIP_MODE ?? 'fixed');
+  const jitoMinTipLamports = parseIntOr(process.env.JITO_MIN_TIP_LAMPORTS, 5_000);
+  const jitoMaxTipLamports = parseIntOr(process.env.JITO_MAX_TIP_LAMPORTS, 50_000);
+  const jitoTipBps = parseIntOr(process.env.JITO_TIP_BPS, 2000);
+  const jitoWaitMs = parseIntOr(process.env.JITO_WAIT_MS, 0);
+  const jitoFallbackRpc = parseBoolean(process.env.JITO_FALLBACK_RPC, false);
+  const jitoTipAccount = process.env.JITO_TIP_ACCOUNT;
 
   const solanaRpcUrl = z.string().min(1).parse(process.env.SOLANA_RPC_URL);
   const walletSecretKey = z.string().min(1).parse(process.env.WALLET_SECRET_KEY);
@@ -52,6 +70,23 @@ export function getEnv() {
     rentBufferLamports,
     computeUnitLimit,
     computeUnitPriceMicroLamports,
+    quoteCacheTtlMs,
+    lutCacheTtlMs,
+    pairConcurrency,
+    minBalanceLamports,
+    maxErrorsBeforeExit,
+    maxConsecutiveErrorsBeforeExit,
+    autoSetupWallet,
+    jitoEnabled,
+    jitoBlockEngineUrl,
+    jitoTipLamports,
+    jitoTipMode,
+    jitoMinTipLamports,
+    jitoMaxTipLamports,
+    jitoTipBps,
+    jitoWaitMs,
+    jitoFallbackRpc,
+    jitoTipAccount,
     solanaRpcUrl,
     walletSecretKey,
     configPath,
