@@ -137,6 +137,8 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
   - `OPENOCEAN_OBSERVE_ENABLED` / `OPENOCEAN_EXECUTE_ENABLED`
   - `OPENOCEAN_EVERY_N_TICKS` (ex: `2` = consulta a cada 2 ticks)
   - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver "perto do breakeven", ex `-250` bps = -2.5%)
+- Dex filters (opcional): `OPENOCEAN_ENABLED_DEX_IDS` / `OPENOCEAN_DISABLED_DEX_IDS` (veja `https://open-api.openocean.finance/v4/solana/dexList`; no momento `Jupiter=6`, `Titan=10`).
+- Referrer (opcional): `OPENOCEAN_REFERRER` / `OPENOCEAN_REFERRER_FEE` (cuidado: fee reduz sua margem; em arbitragem normalmente deixe vazio).
 - Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
 
 ## Trigger strategy

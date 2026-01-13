@@ -47,22 +47,6 @@ function bpsToPercentString(bps: number): string {
   return `${whole}.${trimmed}`;
 }
 
-function atomicToDecimalString(amountAtomic: string, decimals: number): string {
-  const digits = amountAtomic.replace(/^0+/, '') || '0';
-  const d = Math.max(0, Math.floor(decimals));
-  if (d === 0) return digits;
-
-  if (digits.length <= d) {
-    const padded = digits.padStart(d, '0');
-    const frac = padded.replace(/0+$/, '');
-    return frac.length ? `0.${frac}` : '0';
-  }
-
-  const intPart = digits.slice(0, digits.length - d);
-  const fracPart = digits.slice(digits.length - d).replace(/0+$/, '');
-  return fracPart.length ? `${intPart}.${fracPart}` : intPart;
-}
-
 export class OpenOceanClient {
   private readonly limiter: MinIntervalRateLimiter;
   private bannedUntilMs = 0;
@@ -73,6 +57,10 @@ export class OpenOceanClient {
       apiKey?: string;
       minIntervalMs?: number;
       gasPrice?: number;
+      enabledDexIds?: string;
+      disabledDexIds?: string;
+      referrer?: string;
+      referrerFee?: string;
     } = {},
   ) {
     this.limiter = new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs ?? 1200)));
@@ -124,18 +112,18 @@ export class OpenOceanClient {
     inputMint: string;
     outputMint: string;
     amountAtomic: string;
-    inputDecimals: number;
     slippageBps: number;
   }): Promise<OpenOceanQuote> {
-    const amount = atomicToDecimalString(params.amountAtomic, params.inputDecimals);
     const slippage = bpsToPercentString(params.slippageBps);
 
     const url = withQuery(`${this.baseUrl}/quote`, {
       inTokenAddress: params.inputMint,
       outTokenAddress: params.outputMint,
-      amount,
+      amountDecimals: params.amountAtomic,
       slippage,
-      gasPrice: String(this.gasPrice),
+      gasPriceDecimals: String(this.gasPrice),
+      enabledDexIds: this.config.enabledDexIds,
+      disabledDexIds: this.config.disabledDexIds,
     });
 
     const res = await this.call(() => fetchJson<OpenOceanApiResponse<OpenOceanQuoteData>>(url, { headers: this.headers }));
@@ -161,20 +149,22 @@ export class OpenOceanClient {
     inputMint: string;
     outputMint: string;
     amountAtomic: string;
-    inputDecimals: number;
     slippageBps: number;
     account: string;
   }): Promise<OpenOceanSwapData> {
-    const amount = atomicToDecimalString(params.amountAtomic, params.inputDecimals);
     const slippage = bpsToPercentString(params.slippageBps);
 
     const url = withQuery(`${this.baseUrl}/swap`, {
       inTokenAddress: params.inputMint,
       outTokenAddress: params.outputMint,
-      amount,
+      amountDecimals: params.amountAtomic,
       slippage,
-      gasPrice: String(this.gasPrice),
+      gasPriceDecimals: String(this.gasPrice),
       account: params.account,
+      enabledDexIds: this.config.enabledDexIds,
+      disabledDexIds: this.config.disabledDexIds,
+      referrer: this.config.referrer,
+      referrerFee: this.config.referrerFee,
     });
 
     const res = await this.call(() => fetchJson<OpenOceanApiResponse<OpenOceanSwapData>>(url, { headers: this.headers }));

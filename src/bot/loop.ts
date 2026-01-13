@@ -5,7 +5,6 @@ import type { Logger } from '../lib/logger.js';
 import { sleep } from '../lib/time.js';
 import type { JupiterClient } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
-import type { MintDecimalsCache } from '../solana/mint.js';
 import type { LookupTableCache } from '../solana/lookupTableCache.js';
 import { executeCandidate } from './executor.js';
 import { scanPair } from './scanner.js';
@@ -20,7 +19,6 @@ export async function scanAndMaybeExecute(params: {
   wallet: Keypair;
   jupiter: JupiterClient;
   openOcean?: OpenOceanClient;
-  mintDecimalsCache?: MintDecimalsCache;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
   triggerStrategy: 'immediate' | 'avg-window' | 'vwap' | 'bollinger';
@@ -168,7 +166,6 @@ export async function scanAndMaybeExecute(params: {
       wallet: params.wallet,
       jupiter: params.jupiter,
       openOcean: params.openOcean,
-      mintDecimalsCache: params.mintDecimalsCache,
       amountsOverride: pickAmountsOverrideForTick(),
       enableOpenOcean,
       openOceanJupiterGateBps,

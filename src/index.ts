@@ -15,7 +15,6 @@ import { forEachLimit } from './lib/concurrency.js';
 import { LookupTableCache } from './solana/lookupTableCache.js';
 import { PriorityFeeEstimator } from './solana/priorityFees.js';
 import { OpenOceanClient } from './openocean/client.js';
-import { MintDecimalsCache } from './solana/mint.js';
 
 function parseArgs(argv: string[]) {
   const args = new Set(argv.slice(2));
@@ -72,9 +71,12 @@ async function main() {
         apiKey: env.openOceanApiKey,
         gasPrice: env.openOceanGasPrice,
         minIntervalMs: env.openOceanMinIntervalMs,
+        enabledDexIds: env.openOceanEnabledDexIds,
+        disabledDexIds: env.openOceanDisabledDexIds,
+        referrer: env.openOceanReferrer,
+        referrerFee: env.openOceanReferrerFee,
       })
     : undefined;
-  const mintDecimalsCache = new MintDecimalsCache();
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
 
   console.log(
@@ -159,7 +161,6 @@ async function main() {
           wallet,
           jupiter: cachedJupiter,
           openOcean,
-          mintDecimalsCache,
           mode: env.mode,
           executionStrategy: env.executionStrategy,
           triggerStrategy: env.triggerStrategy,

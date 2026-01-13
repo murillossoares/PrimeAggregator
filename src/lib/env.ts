@@ -29,6 +29,11 @@ function parseFloatOr(value: string | undefined, defaultValue: number) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+function parseOptionalString(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 export function getEnv() {
   const mode = ModeSchema.parse(process.env.MODE ?? 'dry-run');
   const executionStrategy = ExecutionStrategySchema.parse(process.env.EXECUTION_STRATEGY ?? 'atomic');
@@ -103,6 +108,10 @@ export function getEnv() {
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
   const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
   const openOceanSignaturesEstimate = parseIntOr(process.env.OPENOCEAN_SIGNATURES_ESTIMATE, 3);
+  const openOceanEnabledDexIds = parseOptionalString(process.env.OPENOCEAN_ENABLED_DEX_IDS);
+  const openOceanDisabledDexIds = parseOptionalString(process.env.OPENOCEAN_DISABLED_DEX_IDS);
+  const openOceanReferrer = parseOptionalString(process.env.OPENOCEAN_REFERRER);
+  const openOceanReferrerFee = parseOptionalString(process.env.OPENOCEAN_REFERRER_FEE);
   const openOceanObserveEnabled = parseBoolean(process.env.OPENOCEAN_OBSERVE_ENABLED, false);
   const openOceanExecuteEnabled = parseBoolean(process.env.OPENOCEAN_EXECUTE_ENABLED, true);
   const openOceanEveryNTicks = parseIntOr(process.env.OPENOCEAN_EVERY_N_TICKS, 2);
@@ -181,6 +190,10 @@ export function getEnv() {
     openOceanGasPrice,
     openOceanMinIntervalMs,
     openOceanSignaturesEstimate,
+    openOceanEnabledDexIds,
+    openOceanDisabledDexIds,
+    openOceanReferrer,
+    openOceanReferrerFee,
     openOceanObserveEnabled,
     openOceanExecuteEnabled,
     openOceanEveryNTicks,

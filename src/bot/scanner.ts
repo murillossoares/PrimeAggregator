@@ -5,7 +5,6 @@ import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { OpenOceanQuote } from '../openocean/types.js';
-import type { MintDecimalsCache } from '../solana/mint.js';
 import { decideWithOptionalRust } from './rustDecision.js';
 
 export type LoopCandidate = {
@@ -185,7 +184,6 @@ export async function scanPair(params: {
   wallet: Keypair;
   jupiter: JupiterClient;
   openOcean?: OpenOceanClient;
-  mintDecimalsCache?: MintDecimalsCache;
   amountsOverride?: string[];
   enableOpenOcean?: boolean;
   openOceanJupiterGateBps?: number;
@@ -360,29 +358,7 @@ export async function scanPair(params: {
   const candidates: Candidate[] = [];
 
   const enableOpenOcean = params.enableOpenOcean ?? true;
-  const canUseOpenOcean =
-    enableOpenOcean && params.executionStrategy === 'sequential' && Boolean(params.openOcean) && Boolean(params.mintDecimalsCache);
-  let aDecimals: number | undefined;
-  let bDecimals: number | undefined;
-  if (canUseOpenOcean) {
-    try {
-      const cache = params.mintDecimalsCache as MintDecimalsCache;
-      [aDecimals, bDecimals] = await Promise.all([
-        cache.get(params.connection, params.pair.aMint),
-        cache.get(params.connection, params.pair.bMint),
-      ]);
-    } catch (error) {
-      await params.logEvent({
-        ts: new Date().toISOString(),
-        type: 'warning',
-        pair: params.pair.name,
-        warning: 'openocean_mint_decimals_failed',
-        error: String(error),
-      });
-      aDecimals = undefined;
-      bDecimals = undefined;
-    }
-  }
+  const canUseOpenOcean = enableOpenOcean && params.executionStrategy === 'sequential' && Boolean(params.openOcean);
 
   for (const amountA of amounts) {
     if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
@@ -494,7 +470,7 @@ export async function scanPair(params: {
     }
   }
 
-  if (canUseOpenOcean && aDecimals !== undefined && bDecimals !== undefined) {
+  if (canUseOpenOcean) {
     const bestJupiter = pickBestCandidate(candidates);
     if (!bestJupiter) {
       await params.logEvent({
@@ -554,7 +530,6 @@ export async function scanPair(params: {
         inputMint: params.pair.aMint,
         outputMint: params.pair.bMint,
         amountAtomic: referenceAmountA,
-        inputDecimals: aDecimals,
         slippageBps: slippageBpsLeg1,
       });
 
@@ -562,7 +537,6 @@ export async function scanPair(params: {
         inputMint: params.pair.bMint,
         outputMint: params.pair.aMint,
         amountAtomic: quote1.otherAmountThreshold,
-        inputDecimals: bDecimals,
         slippageBps: slippageBpsLeg2,
       });
 

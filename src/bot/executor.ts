@@ -215,7 +215,6 @@ export async function executeCandidate(params: {
       inputMint: params.best.quote1.inputMint,
       outputMint: params.best.quote1.outputMint,
       amountAtomic: params.best.amountA,
-      inputDecimals: params.best.quote1.raw.inToken.decimals,
       slippageBps: params.best.quote1.slippageBps,
       account,
     });
@@ -230,7 +229,6 @@ export async function executeCandidate(params: {
           inputMint: params.best.quote2.inputMint,
           outputMint: params.best.quote2.outputMint,
           amountAtomic: params.best.quote1.otherAmountThreshold,
-          inputDecimals: params.best.quote2.raw.inToken.decimals,
           slippageBps: params.best.quote2.slippageBps,
           account,
         });
@@ -292,7 +290,6 @@ export async function executeCandidate(params: {
       inputMint: params.best.quote2.inputMint,
       outputMint: params.best.quote2.outputMint,
       amountAtomic: params.best.quote1.otherAmountThreshold,
-      inputDecimals: params.best.quote2.raw.inToken.decimals,
       slippageBps: params.best.quote2.slippageBps,
       account,
     });
