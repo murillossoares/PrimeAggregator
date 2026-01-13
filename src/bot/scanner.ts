@@ -3,6 +3,9 @@ import type { Connection, Keypair } from '@solana/web3.js';
 import type { BotPair } from '../lib/config.js';
 import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
+import type { OpenOceanClient } from '../openocean/client.js';
+import type { OpenOceanQuote } from '../openocean/types.js';
+import type { MintDecimalsCache } from '../solana/mint.js';
 import { decideWithOptionalRust } from './rustDecision.js';
 
 export type LoopCandidate = {
@@ -10,6 +13,16 @@ export type LoopCandidate = {
   amountA: string;
   quote1: QuoteResponse | UltraOrderResponse;
   quote2: QuoteResponse | UltraOrderResponse;
+  decision: { profitable: boolean; profit: string; conservativeProfit: string };
+  feeEstimateLamports: string;
+  jitoTipLamports: number;
+};
+
+export type OpenOceanLoopCandidate = {
+  kind: 'loop_openocean';
+  amountA: string;
+  quote1: OpenOceanQuote;
+  quote2: OpenOceanQuote;
   decision: { profitable: boolean; profit: string; conservativeProfit: string };
   feeEstimateLamports: string;
   jitoTipLamports: number;
@@ -26,7 +39,7 @@ export type TriangularCandidate = {
   jitoTipLamports: number;
 };
 
-export type Candidate = LoopCandidate | TriangularCandidate;
+export type Candidate = LoopCandidate | OpenOceanLoopCandidate | TriangularCandidate;
 
 export type ScanSummary = {
   amountsTried: number;
@@ -147,6 +160,9 @@ export async function scanPair(params: {
   connection: Connection;
   wallet: Keypair;
   jupiter: JupiterClient;
+  openOcean?: OpenOceanClient;
+  mintDecimalsCache?: MintDecimalsCache;
+  executionStrategy: 'atomic' | 'sequential';
   pair: BotPair;
   logEvent: Logger;
   computeUnitLimit: number;
@@ -306,6 +322,31 @@ export async function scanPair(params: {
   }
 
   const candidates: Candidate[] = [];
+
+  const canUseOpenOcean =
+    params.executionStrategy === 'sequential' && Boolean(params.openOcean) && Boolean(params.mintDecimalsCache);
+  let aDecimals: number | undefined;
+  let bDecimals: number | undefined;
+  if (canUseOpenOcean) {
+    try {
+      const cache = params.mintDecimalsCache as MintDecimalsCache;
+      [aDecimals, bDecimals] = await Promise.all([
+        cache.get(params.connection, params.pair.aMint),
+        cache.get(params.connection, params.pair.bMint),
+      ]);
+    } catch (error) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'warning',
+        pair: params.pair.name,
+        warning: 'openocean_mint_decimals_failed',
+        error: String(error),
+      });
+      aDecimals = undefined;
+      bDecimals = undefined;
+    }
+  }
+
   for (const amountA of amounts) {
     if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
       continue;
@@ -383,6 +424,7 @@ export async function scanPair(params: {
         ts: new Date().toISOString(),
         type: 'candidate',
         pair: params.pair.name,
+        provider: 'jupiter',
         amountA,
         includeDexes,
         excludeDexes,
@@ -402,7 +444,105 @@ export async function scanPair(params: {
         ts: new Date().toISOString(),
         type: 'candidate_error',
         pair: params.pair.name,
+        provider: 'jupiter',
         amountA,
+        error: String(error),
+      });
+    }
+  }
+
+  if (canUseOpenOcean && aDecimals !== undefined && bDecimals !== undefined) {
+    const referenceAmountA = pickBestCandidate(candidates)?.amountA ?? amounts[0];
+
+    try {
+      const openOcean = params.openOcean as OpenOceanClient;
+
+      const quote1 = await openOcean.quoteExactIn({
+        inputMint: params.pair.aMint,
+        outputMint: params.pair.bMint,
+        amountAtomic: referenceAmountA,
+        inputDecimals: aDecimals,
+        slippageBps: slippageBpsLeg1,
+      });
+
+      const quote2 = await openOcean.quoteExactIn({
+        inputMint: params.pair.bMint,
+        outputMint: params.pair.aMint,
+        amountAtomic: quote1.otherAmountThreshold,
+        inputDecimals: bDecimals,
+        slippageBps: slippageBpsLeg2,
+      });
+
+      const jitoTipLamports = computeJitoTipLamports({
+        jitoEnabled: params.jitoEnabled,
+        jitoTipMode: params.jitoTipMode,
+        fixedTipLamports: params.jitoTipLamports,
+        minTipLamports: params.jitoMinTipLamports,
+        maxTipLamports: params.jitoMaxTipLamports,
+        tipBps: params.jitoTipBps,
+        pair: params.pair,
+        amountA: referenceAmountA,
+        finalMinOut: quote2.otherAmountThreshold,
+      });
+
+      const feeEstimateLamports = estimateFeeLamports({
+        baseFeeLamports,
+        rentBufferLamports,
+        computeUnitLimit,
+        computeUnitPriceMicroLamports,
+        jitoTipLamports,
+      });
+
+      const decision = await decideWithOptionalRust({
+        useRust: params.useRustCalc,
+        rustCalcPath: params.rustCalcPath,
+        amountIn: referenceAmountA,
+        quote1Out: quote1.outAmount,
+        quote1MinOut: quote1.otherAmountThreshold,
+        quote2Out: quote2.outAmount,
+        quote2MinOut: quote2.otherAmountThreshold,
+        minProfit: params.pair.minProfitA,
+        feeEstimateLamports,
+      });
+
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'candidate',
+        pair: params.pair.name,
+        provider: 'openocean',
+        amountA: referenceAmountA,
+        slippageBps: params.pair.slippageBps,
+        slippageBpsLeg1,
+        slippageBpsLeg2,
+        outB: quote1.outAmount,
+        outBMin: quote1.otherAmountThreshold,
+        outA: quote2.outAmount,
+        outAMin: quote2.otherAmountThreshold,
+        dexId1: quote1.dexId,
+        dexId2: quote2.dexId,
+        feeEstimateLamports,
+        jitoTipLamports,
+        profit: decision.profit,
+        conservativeProfit: decision.conservativeProfit,
+        profitable: decision.profitable,
+      });
+
+      candidates.push({
+        kind: 'loop_openocean',
+        amountA: referenceAmountA,
+        quote1,
+        quote2,
+        decision,
+        feeEstimateLamports,
+        jitoTipLamports,
+      });
+    } catch (error) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'candidate_error',
+        pair: params.pair.name,
+        provider: 'openocean',
+        amountA: referenceAmountA,
         error: String(error),
       });
     }

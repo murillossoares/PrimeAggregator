@@ -123,6 +123,34 @@ Exemplo: `config.triangular.example.json`
 - A API de Swap/Quote usada aqui eh `https://api.jup.ag/swap/v1/*` e tambem exige `x-api-key`.
 - O projeto usa Ultra apenas se `JUP_USE_ULTRA=true` e `JUP_API_KEY` estiver definido.
 
+## OpenOcean (meta-agregador; opcional)
+
+A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
+
+- Habilite: `OPENOCEAN_ENABLED=true`
+- Base URL (Solana v4): `OPENOCEAN_BASE_URL=https://open-api.openocean.finance/v4/solana`
+- Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `600ms`).
+- Observacao: no scan do loop, a OpenOcean eh consultada apenas para **1 tamanho** (o melhor tamanho visto no scan Jupiter daquele ciclo) para nao estourar o limite de 2 RPS.
+- Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
+
+## Trigger strategy
+
+Opcoes de gatilho para reduzir execucao em ruido:
+
+- `TRIGGER_STRATEGY=immediate` (padrao): executa assim que achar candidato lucrativo.
+- `TRIGGER_STRATEGY=avg-window`: observa o lucro liquido (conservador) por 30s, calcula a media e na janela seguinte (10s) so executa se `profit >= media`.
+- `TRIGGER_STRATEGY=bollinger`: calcula EMA + desvio padrao do **lucro em bps** e arma execucao quando rompe `EMA + K*StdDev`, executando na reversao (trailing stop).
+
+Ajustes de janela:
+
+- `TRIGGER_OBSERVE_MS`, `TRIGGER_OBSERVE_INTERVAL_MS`, `TRIGGER_EXECUTE_MS`, `TRIGGER_EXECUTE_INTERVAL_MS`
+
+Ajustes do modo `bollinger`:
+
+- `TRIGGER_BOLLINGER_K` (default `1.5`), `TRIGGER_EMA_ALPHA` (`0` = auto), `TRIGGER_BOLLINGER_MIN_SAMPLES`
+- `TRIGGER_MOMENTUM_LOOKBACK`, `TRIGGER_TRAIL_DROP_BPS`
+- `TRIGGER_EMERGENCY_SIGMA` (`0` desativa; ex `4` para “4-sigma”)
+
 ## Seguranca
 
 - Nunca commite sua private key.

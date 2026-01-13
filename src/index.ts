@@ -13,6 +13,8 @@ import { setupWalletTokenAccounts } from './solana/setupWallet.js';
 import { forEachLimit } from './lib/concurrency.js';
 import { LookupTableCache } from './solana/lookupTableCache.js';
 import { PriorityFeeEstimator } from './solana/priorityFees.js';
+import { OpenOceanClient } from './openocean/client.js';
+import { MintDecimalsCache } from './solana/mint.js';
 
 function parseArgs(argv: string[]) {
   const args = new Set(argv.slice(2));
@@ -54,6 +56,15 @@ async function main() {
     useUltra: env.jupUseUltra,
   });
   const cachedJupiter = withJupiterQuoteCache(jupiter, env.quoteCacheTtlMs);
+  const openOcean = env.openOceanEnabled
+    ? new OpenOceanClient({
+        baseUrl: env.openOceanBaseUrl,
+        apiKey: env.openOceanApiKey,
+        gasPrice: env.openOceanGasPrice,
+        minIntervalMs: env.openOceanMinIntervalMs,
+      })
+    : undefined;
+  const mintDecimalsCache = new MintDecimalsCache();
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
 
   console.log(
@@ -66,8 +77,10 @@ async function main() {
         pubkey: wallet.publicKey.toBase58(),
         balanceLamports,
         pairConcurrency: env.pairConcurrency,
+        triggerStrategy: env.triggerStrategy,
         solanaCommitment: env.solanaCommitment,
         solanaWs: Boolean(env.solanaWsUrl),
+        openOceanEnabled: env.openOceanEnabled,
         priorityFeeStrategy: env.priorityFeeStrategy,
         priorityFeeLevel: env.priorityFeeLevel,
         computeUnitPriceMicroLamports: dynamicComputeUnitPriceMicroLamports,
@@ -85,8 +98,10 @@ async function main() {
     pairs: config.pairs.length,
     pubkey: wallet.publicKey.toBase58(),
     balanceLamports,
+    triggerStrategy: env.triggerStrategy,
     solanaCommitment: env.solanaCommitment,
     solanaWs: Boolean(env.solanaWsUrl),
+    openOceanEnabled: env.openOceanEnabled,
   });
 
   if (args.setupWallet) {
@@ -127,8 +142,21 @@ async function main() {
           connection,
           wallet,
           jupiter: cachedJupiter,
+          openOcean,
+          mintDecimalsCache,
           mode: env.mode,
           executionStrategy: env.executionStrategy,
+          triggerStrategy: env.triggerStrategy,
+          triggerObserveMs: env.triggerObserveMs,
+          triggerObserveIntervalMs: env.triggerObserveIntervalMs,
+          triggerExecuteMs: env.triggerExecuteMs,
+          triggerExecuteIntervalMs: env.triggerExecuteIntervalMs,
+          triggerBollingerK: env.triggerBollingerK,
+          triggerEmaAlpha: env.triggerEmaAlpha,
+          triggerBollingerMinSamples: env.triggerBollingerMinSamples,
+          triggerMomentumLookback: env.triggerMomentumLookback,
+          triggerTrailDropBps: env.triggerTrailDropBps,
+          triggerEmergencySigma: env.triggerEmergencySigma,
           dryRunBuild: env.dryRunBuild,
           dryRunSimulate: env.dryRunSimulate,
           livePreflightSimulate: env.livePreflightSimulate,

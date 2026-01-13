@@ -1,4 +1,5 @@
 .env
+.env.bak*
 config.json
 dist
 node_modules

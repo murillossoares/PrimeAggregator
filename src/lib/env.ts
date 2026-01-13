@@ -6,6 +6,7 @@ const JitoTipModeSchema = z.enum(['fixed', 'dynamic']);
 const PriorityFeeStrategySchema = z.enum(['off', 'rpc-recent', 'helius']);
 const PriorityFeeLevelSchema = z.enum(['min', 'low', 'medium', 'high', 'veryHigh', 'unsafeMax', 'recommended']);
 const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
+const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'bollinger']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -21,9 +22,26 @@ function parseIntOr(value: string | undefined, defaultValue: number) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+function parseFloatOr(value: string | undefined, defaultValue: number) {
+  if (value === undefined) return defaultValue;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
 export function getEnv() {
   const mode = ModeSchema.parse(process.env.MODE ?? 'dry-run');
   const executionStrategy = ExecutionStrategySchema.parse(process.env.EXECUTION_STRATEGY ?? 'atomic');
+  const triggerStrategy = TriggerStrategySchema.parse(process.env.TRIGGER_STRATEGY ?? 'immediate');
+  const triggerObserveMs = parseIntOr(process.env.TRIGGER_OBSERVE_MS, 30_000);
+  const triggerObserveIntervalMs = parseIntOr(process.env.TRIGGER_OBSERVE_INTERVAL_MS, 1000);
+  const triggerExecuteMs = parseIntOr(process.env.TRIGGER_EXECUTE_MS, 10_000);
+  const triggerExecuteIntervalMs = parseIntOr(process.env.TRIGGER_EXECUTE_INTERVAL_MS, 500);
+  const triggerBollingerK = parseFloatOr(process.env.TRIGGER_BOLLINGER_K, 1.5);
+  const triggerEmaAlpha = parseFloatOr(process.env.TRIGGER_EMA_ALPHA, 0);
+  const triggerBollingerMinSamples = parseIntOr(process.env.TRIGGER_BOLLINGER_MIN_SAMPLES, 10);
+  const triggerMomentumLookback = parseIntOr(process.env.TRIGGER_MOMENTUM_LOOKBACK, 2);
+  const triggerTrailDropBps = parseIntOr(process.env.TRIGGER_TRAIL_DROP_BPS, 1);
+  const triggerEmergencySigma = parseFloatOr(process.env.TRIGGER_EMERGENCY_SIGMA, 0);
   const dryRunBuild = parseBoolean(process.env.DRY_RUN_BUILD, false);
   const dryRunSimulate = parseBoolean(process.env.DRY_RUN_SIMULATE, false);
   const livePreflightSimulate = parseBoolean(process.env.LIVE_PREFLIGHT_SIMULATE, true);
@@ -71,12 +89,29 @@ export function getEnv() {
   const jupApiKey = process.env.JUP_API_KEY;
   const jupUseUltra = parseBoolean(process.env.JUP_USE_ULTRA, false);
 
+  const openOceanEnabled = parseBoolean(process.env.OPENOCEAN_ENABLED, false);
+  const openOceanBaseUrl = process.env.OPENOCEAN_BASE_URL ?? 'https://open-api.openocean.finance/v4/solana';
+  const openOceanApiKey = process.env.OPENOCEAN_API_KEY;
+  const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
+  const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 600);
+
   const useRustCalc = parseBoolean(process.env.USE_RUST_CALC, false);
   const rustCalcPath = process.env.RUST_CALC_PATH ?? './target/release/arb_calc';
 
   return {
     mode,
     executionStrategy,
+    triggerStrategy,
+    triggerObserveMs,
+    triggerObserveIntervalMs,
+    triggerExecuteMs,
+    triggerExecuteIntervalMs,
+    triggerBollingerK,
+    triggerEmaAlpha,
+    triggerBollingerMinSamples,
+    triggerMomentumLookback,
+    triggerTrailDropBps,
+    triggerEmergencySigma,
     dryRunBuild,
     dryRunSimulate,
     livePreflightSimulate,
@@ -120,6 +155,11 @@ export function getEnv() {
     jupUltraBaseUrl,
     jupApiKey,
     jupUseUltra,
+    openOceanEnabled,
+    openOceanBaseUrl,
+    openOceanApiKey,
+    openOceanGasPrice,
+    openOceanMinIntervalMs,
     useRustCalc,
     rustCalcPath,
   };

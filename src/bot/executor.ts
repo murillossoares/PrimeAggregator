@@ -4,6 +4,8 @@ import bs58 from 'bs58';
 import type { BotPair } from '../lib/config.js';
 import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
+import type { OpenOceanClient } from '../openocean/client.js';
+import type { OpenOceanSwapData } from '../openocean/types.js';
 import { buildAtomicPathTransaction } from './atomic.js';
 import { getJitoTipAccountAddress, sendBundleViaJito } from './jitoSender.js';
 import type { Candidate } from './scanner.js';
@@ -16,6 +18,7 @@ type ScanResult = {
 
 function formatDecisionLog(params: {
   pair: BotPair;
+  provider?: string;
   amountA: string;
   quotes: QuoteResponse[];
   feeEstimateLamports: string;
@@ -29,6 +32,7 @@ function formatDecisionLog(params: {
     aMint: params.pair.aMint,
     bMint: params.pair.bMint,
     cMint: params.pair.cMint,
+    provider: params.provider,
     amountA: params.amountA,
     feeEstimateLamports: params.feeEstimateLamports,
     profit: params.profit,
@@ -124,10 +128,23 @@ async function sendSignedTx(params: {
   return signature;
 }
 
+function decodeOpenOceanTxBytes(data: string) {
+  const trimmed = data.trim();
+  const maybeHex = trimmed.startsWith('0x') ? trimmed.slice(2) : trimmed;
+  const isHex = maybeHex.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(maybeHex);
+  return Buffer.from(isHex ? maybeHex : trimmed, isHex ? 'hex' : 'base64');
+}
+
+function deserializeOpenOceanSwapTx(swap: OpenOceanSwapData) {
+  const raw = decodeOpenOceanTxBytes(swap.data);
+  return VersionedTransaction.deserialize(raw);
+}
+
 export async function executeCandidate(params: {
   connection: Connection;
   wallet: Keypair;
   jupiter: JupiterClient;
+  openOcean?: OpenOceanClient;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
   dryRunBuild: boolean;
@@ -161,6 +178,7 @@ export async function executeCandidate(params: {
     JSON.stringify(
       formatDecisionLog({
         pair: params.pair,
+        provider: params.best.kind === 'loop_openocean' ? 'openocean' : 'jupiter',
         amountA: params.best.amountA,
         quotes: decisionLogQuotes as QuoteResponse[],
         feeEstimateLamports: params.best.feeEstimateLamports,
@@ -170,6 +188,92 @@ export async function executeCandidate(params: {
       }),
     ),
   );
+
+  if (params.best.kind === 'loop_openocean') {
+    if (params.executionStrategy !== 'sequential') {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        provider: 'openocean',
+        reason: 'openocean-requires-sequential',
+      });
+      return { kind: 'skipped', reason: 'openocean-requires-sequential' };
+    }
+    if (!params.openOcean) {
+      throw new Error('OpenOcean candidate selected but OpenOcean client is missing');
+    }
+
+    const account = params.wallet.publicKey.toBase58();
+    const swap1 = await params.openOcean.swap({
+      inputMint: params.best.quote1.inputMint,
+      outputMint: params.best.quote1.outputMint,
+      amountAtomic: params.best.amountA,
+      inputDecimals: params.best.quote1.raw.inToken.decimals,
+      slippageBps: params.best.quote1.slippageBps,
+      account,
+    });
+    const tx1 = deserializeOpenOceanSwapTx(swap1);
+    tx1.sign([params.wallet]);
+
+    const swap2 = await params.openOcean.swap({
+      inputMint: params.best.quote2.inputMint,
+      outputMint: params.best.quote2.outputMint,
+      amountAtomic: params.best.quote1.otherAmountThreshold,
+      inputDecimals: params.best.quote2.raw.inToken.decimals,
+      slippageBps: params.best.quote2.slippageBps,
+      account,
+    });
+    const tx2 = deserializeOpenOceanSwapTx(swap2);
+    tx2.sign([params.wallet]);
+
+    if (params.mode === 'dry-run') {
+      if (params.dryRunSimulate) {
+        const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
+        const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
+        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sim1, sim2 }));
+        await params.logEvent({ ts: new Date().toISOString(), type: 'simulate', pair: params.pair.name, provider: 'openocean', sim1, sim2 });
+        return { kind: 'simulated' };
+      }
+      console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', note: 'dry-run build-only' }));
+      await params.logEvent({ ts: new Date().toISOString(), type: 'built', pair: params.pair.name, provider: 'openocean' });
+      return { kind: 'built' };
+    }
+
+    if (params.livePreflightSimulate) {
+      const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
+      const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'preflight',
+        pair: params.pair.name,
+        provider: 'openocean',
+        sequential: true,
+        sim1Err: sim1.err,
+        sim2Err: sim2.err,
+      });
+      if (sim1.err || sim2.err) {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', preflight: false, sim1Err: sim1.err, sim2Err: sim2.err }));
+        return { kind: 'skipped', reason: 'preflight-failed' };
+      }
+    }
+
+    const latest = await params.connection.getLatestBlockhash('confirmed');
+    const sig1 = await sendSignedTx({
+      connection: params.connection,
+      tx: tx1,
+      lastValidBlockHeight: swap1.lastValidBlockHeight ?? latest.lastValidBlockHeight,
+    });
+    const sig2 = await sendSignedTx({
+      connection: params.connection,
+      tx: tx2,
+      lastValidBlockHeight: swap2.lastValidBlockHeight ?? latest.lastValidBlockHeight,
+    });
+
+    console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sig1, sig2 }));
+    await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, provider: 'openocean', sig1, sig2 });
+    return { kind: 'executed' };
+  }
 
   if (params.jupiter.kind === 'ultra') {
     if (params.best.kind !== 'loop') {
