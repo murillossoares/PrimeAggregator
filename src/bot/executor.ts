@@ -16,6 +16,17 @@ type ScanResult = {
   reason?: string;
 };
 
+function parseBooleanEnv(name: string, defaultValue: boolean) {
+  const value = process.env[name];
+  if (value === undefined) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+const CONSOLE_VERBOSE = parseBooleanEnv('LOG_VERBOSE', true);
+
 function formatDecisionLog(params: {
   pair: BotPair;
   provider?: string;
@@ -242,7 +253,19 @@ export async function executeCandidate(params: {
           : undefined;
 
         console.log(
-          JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sim1, sim2, sim2Expected, sim2Note }),
+          JSON.stringify(
+            CONSOLE_VERBOSE
+              ? { ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sim1, sim2, sim2Expected, sim2Note }
+              : {
+                  ts: new Date().toISOString(),
+                  pair: params.pair.name,
+                  provider: 'openocean',
+                  sim1Err: sim1.err,
+                  sim2Err: sim2.err,
+                  sim2Expected,
+                  sim2Note,
+                },
+          ),
         );
         await params.logEvent({
           ts: new Date().toISOString(),
@@ -343,7 +366,13 @@ export async function executeCandidate(params: {
       if (params.dryRunSimulate) {
         const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
         const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
-        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, sim1, sim2 }));
+        console.log(
+          JSON.stringify(
+            CONSOLE_VERBOSE
+              ? { ts: new Date().toISOString(), pair: params.pair.name, ultra: true, sim1, sim2 }
+              : { ts: new Date().toISOString(), pair: params.pair.name, ultra: true, sim1Err: sim1.err, sim2Err: sim2.err },
+          ),
+        );
         await params.logEvent({ ts: new Date().toISOString(), type: 'simulate', pair: params.pair.name, sim1, sim2 });
         return { kind: 'simulated' };
       }
@@ -412,7 +441,20 @@ export async function executeCandidate(params: {
     if (params.mode === 'dry-run') {
       if (params.dryRunSimulate) {
         const sim = await simulateSignedTx({ connection: params.connection, tx: built.tx });
-        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, atomic: true, lookupTables: built.lookupTableAddresses.length, sim }));
+        console.log(
+          JSON.stringify(
+            CONSOLE_VERBOSE
+              ? { ts: new Date().toISOString(), pair: params.pair.name, atomic: true, lookupTables: built.lookupTableAddresses.length, sim }
+              : {
+                  ts: new Date().toISOString(),
+                  pair: params.pair.name,
+                  atomic: true,
+                  lookupTables: built.lookupTableAddresses.length,
+                  simErr: sim.err,
+                  unitsConsumed: sim.unitsConsumed,
+                },
+          ),
+        );
         await params.logEvent({ ts: new Date().toISOString(), type: 'simulate', pair: params.pair.name, atomic: true, sim });
         return { kind: 'simulated' };
       }
@@ -565,7 +607,13 @@ export async function executeCandidate(params: {
 
   const sim1 = await simulateV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap1.swapTransaction });
   const sim2 = await simulateV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap2.swapTransaction });
-  console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, sim1, sim2 }));
+  console.log(
+    JSON.stringify(
+      CONSOLE_VERBOSE
+        ? { ts: new Date().toISOString(), pair: params.pair.name, sim1, sim2 }
+        : { ts: new Date().toISOString(), pair: params.pair.name, sim1Err: sim1.err, sim2Err: sim2.err },
+    ),
+  );
   await params.logEvent({ ts: new Date().toISOString(), type: 'simulate', pair: params.pair.name, sim1, sim2 });
   return { kind: 'simulated' };
 }

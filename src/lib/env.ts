@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const ModeSchema = z.enum(['dry-run', 'live']);
+const BotProfileSchema = z.enum(['default', 'hft']);
 const ExecutionStrategySchema = z.enum(['atomic', 'sequential']);
 const JitoTipModeSchema = z.enum(['fixed', 'dynamic']);
 const PriorityFeeStrategySchema = z.enum(['off', 'rpc-recent', 'helius']);
@@ -35,6 +36,7 @@ function parseOptionalString(value: string | undefined) {
 }
 
 export function getEnv() {
+  const botProfile = BotProfileSchema.parse(process.env.BOT_PROFILE ?? 'default');
   const mode = ModeSchema.parse(process.env.MODE ?? 'dry-run');
   const executionStrategy = ExecutionStrategySchema.parse(process.env.EXECUTION_STRATEGY ?? 'atomic');
   const triggerStrategy = TriggerStrategySchema.parse(process.env.TRIGGER_STRATEGY ?? 'immediate');
@@ -63,6 +65,7 @@ export function getEnv() {
   const heliusApiKey = process.env.HELIUS_API_KEY;
   const heliusRpcUrl = process.env.HELIUS_RPC_URL;
   const logPath = process.env.LOG_PATH ?? './logs/events.jsonl';
+  const logVerbose = parseBoolean(process.env.LOG_VERBOSE, botProfile !== 'hft');
   const logRotateMaxBytes = parseIntOr(process.env.LOG_ROTATE_MAX_BYTES, 0);
   const logRotateMaxFiles = parseIntOr(process.env.LOG_ROTATE_MAX_FILES, 0);
   const baseFeeLamports = parseIntOr(process.env.BASE_FEE_LAMPORTS, 5000);
@@ -114,15 +117,18 @@ export function getEnv() {
   const openOceanDisabledDexIds = parseOptionalString(process.env.OPENOCEAN_DISABLED_DEX_IDS);
   const openOceanReferrer = parseOptionalString(process.env.OPENOCEAN_REFERRER);
   const openOceanReferrerFee = parseOptionalString(process.env.OPENOCEAN_REFERRER_FEE);
-  const openOceanObserveEnabled = parseBoolean(process.env.OPENOCEAN_OBSERVE_ENABLED, false);
+  const openOceanObserveEnabled = botProfile === 'hft' ? false : parseBoolean(process.env.OPENOCEAN_OBSERVE_ENABLED, false);
   const openOceanExecuteEnabled = parseBoolean(process.env.OPENOCEAN_EXECUTE_ENABLED, true);
-  const openOceanEveryNTicks = parseIntOr(process.env.OPENOCEAN_EVERY_N_TICKS, 2);
-  const openOceanJupiterGateBps = parseIntOr(process.env.OPENOCEAN_JUPITER_GATE_BPS, -250);
+  const openOceanEveryNTicks = Math.max(1, parseIntOr(process.env.OPENOCEAN_EVERY_N_TICKS, 2));
+  const safeOpenOceanEveryNTicks = botProfile === 'hft' ? Math.max(2, openOceanEveryNTicks) : openOceanEveryNTicks;
+  const defaultOpenOceanGateBps = botProfile === 'hft' ? -50 : -250;
+  const openOceanJupiterGateBps = parseIntOr(process.env.OPENOCEAN_JUPITER_GATE_BPS, defaultOpenOceanGateBps);
 
   const useRustCalc = parseBoolean(process.env.USE_RUST_CALC, false);
   const rustCalcPath = process.env.RUST_CALC_PATH ?? './target/release/arb_calc';
 
   return {
+    botProfile,
     mode,
     executionStrategy,
     triggerStrategy,
@@ -151,6 +157,7 @@ export function getEnv() {
     heliusApiKey,
     heliusRpcUrl,
     logPath,
+    logVerbose,
     logRotateMaxBytes,
     logRotateMaxFiles,
     baseFeeLamports,
@@ -200,7 +207,7 @@ export function getEnv() {
     openOceanReferrerFee,
     openOceanObserveEnabled,
     openOceanExecuteEnabled,
-    openOceanEveryNTicks,
+    openOceanEveryNTicks: safeOpenOceanEveryNTicks,
     openOceanJupiterGateBps,
     useRustCalc,
     rustCalcPath,

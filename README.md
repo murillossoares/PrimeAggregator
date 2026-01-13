@@ -18,6 +18,10 @@ Bot de arbitragem (MVP) focado em Jupiter. Faz loop `A -> B -> A`, com execucao 
 
 3) Copie `config.example.json` para `config.json` e ajuste `pairs`.
 
+Opcional: perfil "HFT" (mais conservador com I/O e OpenOcean):
+
+- `BOT_PROFILE=hft`
+
 ## Helius / QuickNode (alto impacto)
 
 ### RPC privado + WebSocket
@@ -106,6 +110,7 @@ Quando `MODE=live`:
 ## Logging
 
 - `LOG_PATH=./logs/events.jsonl` grava eventos em JSONL (startup, candidates, simulate, executed, etc).
+- `LOG_VERBOSE=true|false`: quando `false`, reduz I/O (loga apenas candidates lucrativos e pula eventos grandes como `simulate`).
 - Rotacao (opcional): `LOG_ROTATE_MAX_BYTES` / `LOG_ROTATE_MAX_FILES` (ex: `10485760` + `5` para ~10MB e 5 arquivos).
 
 ## Config (por par)
@@ -146,6 +151,8 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
   - `OPENOCEAN_EVERY_N_TICKS` (ex: `2` = consulta a cada 2 ticks)
   - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver "perto do breakeven", ex `-250` bps = -2.5%)
 - Dex filters (opcional): `OPENOCEAN_ENABLED_DEX_IDS` / `OPENOCEAN_DISABLED_DEX_IDS` (veja `https://open-api.openocean.finance/v4/solana/dexList`; no momento `Jupiter=6`, `Titan=10`).
+  - Para forcar Titan: `OPENOCEAN_ENABLED_DEX_IDS=10`
+  - Como validar que Titan foi usado: procure `dexId1=10`/`dexId2=10` nos eventos `type=candidate provider=openocean` (e, em `DRY_RUN_SIMULATE=true`, o log de simulacao costuma mostrar o programa Titan `T1TANpTe...`).
 - Referrer (opcional): `OPENOCEAN_REFERRER` / `OPENOCEAN_REFERRER_FEE` (cuidado: fee reduz sua margem; em arbitragem normalmente deixe vazio).
 - Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
 

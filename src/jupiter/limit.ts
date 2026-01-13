@@ -13,6 +13,15 @@ function isRetryableStatus(status: number) {
   return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
 
+function isRetryableError(error: unknown) {
+  const status = extractHttpStatus(error);
+  if (status !== undefined) return isRetryableStatus(status);
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError') return true;
+  const message = error.message.toLowerCase();
+  return message.includes('timeout') || message.includes('timed out') || message.includes('fetch failed') || message.includes('econnreset');
+}
+
 function computeBackoffMs(attempt: number, baseDelayMs: number, maxDelayMs: number) {
   const exp = baseDelayMs * Math.pow(2, attempt);
   const capped = Math.min(maxDelayMs, exp);
@@ -40,8 +49,7 @@ export function withJupiterRateLimit(
       try {
         return await limiter.schedule(fn);
       } catch (error) {
-        const status = extractHttpStatus(error);
-        const retryable = status !== undefined ? isRetryableStatus(status) : false;
+        const retryable = isRetryableError(error);
         const canRetry = retryable && attempt + 1 < maxAttempts;
         if (!canRetry) throw error;
 
@@ -67,4 +75,3 @@ export function withJupiterRateLimit(
     buildSwapInstructions: (params) => call(() => client.buildSwapInstructions(params)),
   };
 }
-

@@ -9,7 +9,7 @@ import { withJupiterQuoteCache } from './jupiter/cache.js';
 import { withJupiterRateLimit } from './jupiter/limit.js';
 import { scanAndMaybeExecute } from './bot/loop.js';
 import { getEnv } from './lib/env.js';
-import { createJsonlLogger } from './lib/logger.js';
+import { createJsonlLogger, type LogEvent, type Logger } from './lib/logger.js';
 import { setupWalletTokenAccounts } from './solana/setupWallet.js';
 import { forEachLimit } from './lib/concurrency.js';
 import { LookupTableCache } from './solana/lookupTableCache.js';
@@ -32,10 +32,18 @@ async function main() {
   const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
-  const logEvent = createJsonlLogger(env.logPath, {
+  const baseLogEvent = createJsonlLogger(env.logPath, {
     rotateMaxBytes: env.logRotateMaxBytes,
     rotateMaxFiles: env.logRotateMaxFiles,
   });
+  const logEvent: Logger = env.logVerbose
+    ? baseLogEvent
+    : async (event: LogEvent) => {
+        const type = typeof event['type'] === 'string' ? (event['type'] as string) : undefined;
+        if (type === 'simulate') return;
+        if (type === 'candidate' && event['profitable'] !== true) return;
+        await baseLogEvent(event);
+      };
 
   const effectiveJitoEnabled = env.jitoEnabled && (env.mode === 'live' || env.dryRunIncludeJitoTip);
   const effectiveJitoTipLamports = effectiveJitoEnabled ? env.jitoTipLamports : 0;
@@ -87,6 +95,7 @@ async function main() {
       {
         ts: new Date().toISOString(),
         mode: env.mode,
+        botProfile: env.botProfile,
         pairs: config.pairs.length,
         useUltra: jupiter.kind,
         pubkey: wallet.publicKey.toBase58(),
@@ -96,7 +105,12 @@ async function main() {
         triggerAmountMode: env.triggerAmountMode,
         solanaCommitment: env.solanaCommitment,
         solanaWs: Boolean(env.solanaWsUrl),
+        logVerbose: env.logVerbose,
         openOceanEnabled: env.openOceanEnabled,
+        openOceanObserveEnabled: env.openOceanObserveEnabled,
+        openOceanExecuteEnabled: env.openOceanExecuteEnabled,
+        openOceanEveryNTicks: env.openOceanEveryNTicks,
+        openOceanJupiterGateBps: env.openOceanJupiterGateBps,
         dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
         jitoEnabled: effectiveJitoEnabled,
         priorityFeeStrategy: env.priorityFeeStrategy,
@@ -112,6 +126,7 @@ async function main() {
     ts: new Date().toISOString(),
     type: 'startup',
     mode: env.mode,
+    botProfile: env.botProfile,
     executionStrategy: env.executionStrategy,
     pairs: config.pairs.length,
     pubkey: wallet.publicKey.toBase58(),
@@ -120,7 +135,12 @@ async function main() {
     triggerAmountMode: env.triggerAmountMode,
     solanaCommitment: env.solanaCommitment,
     solanaWs: Boolean(env.solanaWsUrl),
+    logVerbose: env.logVerbose,
     openOceanEnabled: env.openOceanEnabled,
+    openOceanObserveEnabled: env.openOceanObserveEnabled,
+    openOceanExecuteEnabled: env.openOceanExecuteEnabled,
+    openOceanEveryNTicks: env.openOceanEveryNTicks,
+    openOceanJupiterGateBps: env.openOceanJupiterGateBps,
     dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
     jitoEnabled: effectiveJitoEnabled,
   });

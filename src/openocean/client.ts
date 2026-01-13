@@ -97,12 +97,10 @@ export class OpenOceanClient {
       const status = extractHttpStatus(error);
       if (status === 429) {
         const banMs = extractOpenOceanBanMs(error);
-        if (banMs && banMs > 0) {
-          this.bannedUntilMs = Math.max(this.bannedUntilMs, Date.now() + banMs);
-        }
-        this.limiter.cooldown(10_000);
+        const cooldownMs = banMs && banMs > 0 ? banMs : 10_000;
+        this.bannedUntilMs = Math.max(this.bannedUntilMs, Date.now() + cooldownMs);
       } else if (status && status >= 500) {
-        this.limiter.cooldown(2000);
+        this.bannedUntilMs = Math.max(this.bannedUntilMs, Date.now() + 2000);
       }
       throw error;
     }
