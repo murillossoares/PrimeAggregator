@@ -6,9 +6,10 @@ logs
 target
 tmp
 .env
+.env.production
 .env.bak*
+.env.production.bak*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-

@@ -186,6 +186,21 @@ export async function executeCandidate(params: {
     return { kind: 'skipped', reason: 'not-profitable' };
   }
 
+  if (params.mode === 'live' && params.minBalanceLamports > 0) {
+    const balance = await params.connection.getBalance(params.wallet.publicKey, 'confirmed');
+    if (balance < params.minBalanceLamports) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        reason: 'min-balance',
+        balanceLamports: balance,
+        minBalanceLamports: params.minBalanceLamports,
+      });
+      return { kind: 'skipped', reason: 'min-balance' };
+    }
+  }
+
   const decisionLogQuotes =
     params.best.kind === 'triangular'
       ? [params.best.quote1, params.best.quote2, params.best.quote3]
@@ -330,6 +345,21 @@ export async function executeCandidate(params: {
         leg: 2,
         sim2Err: sim2.err,
       });
+      if (sim2.err) {
+        console.log(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            pair: params.pair.name,
+            provider: 'openocean',
+            preflight: false,
+            sequential: true,
+            leg: 2,
+            sig1,
+            sim2Err: sim2.err,
+          }),
+        );
+        return { kind: 'skipped', reason: 'preflight-failed-leg2' };
+      }
     }
 
     const sig2 = await sendSignedTx({
@@ -406,21 +436,6 @@ export async function executeCandidate(params: {
       : [params.best.quote1 as QuoteResponse, params.best.quote2 as QuoteResponse];
 
   if (params.executionStrategy === 'atomic') {
-    if (params.mode === 'live' && params.minBalanceLamports > 0) {
-      const balance = await params.connection.getBalance(params.wallet.publicKey, 'confirmed');
-      if (balance < params.minBalanceLamports) {
-        await params.logEvent({
-          ts: new Date().toISOString(),
-          type: 'skip',
-          pair: params.pair.name,
-          reason: 'min-balance',
-          balanceLamports: balance,
-          minBalanceLamports: params.minBalanceLamports,
-        });
-        return { kind: 'skipped', reason: 'min-balance' };
-      }
-    }
-
     const wantJito = params.mode === 'live' && params.jitoEnabled;
     const tipLamports = wantJito ? params.best.jitoTipLamports : 0;
     const tipAccount =

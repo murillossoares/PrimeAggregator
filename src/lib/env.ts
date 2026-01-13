@@ -112,6 +112,7 @@ export function getEnv() {
   const openOceanApiKey = process.env.OPENOCEAN_API_KEY;
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
   const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
+  const safeOpenOceanMinIntervalMs = botProfile === 'hft' ? Math.max(600, openOceanMinIntervalMs) : openOceanMinIntervalMs;
   const openOceanSignaturesEstimate = parseIntOr(process.env.OPENOCEAN_SIGNATURES_ESTIMATE, 3);
   const openOceanEnabledDexIds = parseOptionalString(process.env.OPENOCEAN_ENABLED_DEX_IDS);
   const openOceanDisabledDexIds = parseOptionalString(process.env.OPENOCEAN_DISABLED_DEX_IDS);
@@ -199,7 +200,7 @@ export function getEnv() {
     openOceanBaseUrl,
     openOceanApiKey,
     openOceanGasPrice,
-    openOceanMinIntervalMs,
+    openOceanMinIntervalMs: safeOpenOceanMinIntervalMs,
     openOceanSignaturesEstimate,
     openOceanEnabledDexIds,
     openOceanDisabledDexIds,

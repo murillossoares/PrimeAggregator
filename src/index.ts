@@ -28,6 +28,15 @@ async function main() {
   const args = parseArgs(process.argv);
   const env = getEnv();
 
+  let stopRequested = false;
+  let stopSignal: string | undefined;
+  const requestStop = (signal: string) => {
+    stopRequested = true;
+    stopSignal = signal;
+  };
+  process.once('SIGINT', () => requestStop('SIGINT'));
+  process.once('SIGTERM', () => requestStop('SIGTERM'));
+
   const config = await loadConfig(env.configPath);
   const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
@@ -167,6 +176,7 @@ async function main() {
   let totalErrors = 0;
   let consecutiveErrors = 0;
   do {
+    if (stopRequested) break;
     const now = Date.now();
     const eligiblePairs = config.pairs.filter((pair) => {
       const nextAllowedAt = cooldowns.get(pair.name);
@@ -178,6 +188,7 @@ async function main() {
     }
 
     await forEachLimit(eligiblePairs, env.pairConcurrency, async (pair) => {
+      if (stopRequested) return;
       try {
         const result = await scanAndMaybeExecute({
           connection,
@@ -255,9 +266,13 @@ async function main() {
       }
     });
 
-    if (args.once) break;
+    if (args.once || stopRequested) break;
     await sleep(env.pollIntervalMs);
   } while (true);
+
+  if (stopRequested) {
+    await logEvent({ ts: new Date().toISOString(), type: 'shutdown', reason: stopSignal ?? 'signal' });
+  }
 }
 
 main().catch((error) => {

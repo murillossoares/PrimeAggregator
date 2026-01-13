@@ -68,17 +68,33 @@ Se `JITO_ENABLED=true`, por padrao o bot nao paga priority fee (usa tip). Para h
 
 - Build: `docker build -t prime-aggregator .`
 - Compose: `docker compose up --build`
-- Compose (uma iteracao e sai): `docker compose run --rm prime-aggregator node dist/index.js --once`
+- Compose (uma iteracao e sai): `docker compose run --rm prime-aggregator --once`
 
 Por padrao, o bot roda em loop infinito (ate voce parar o processo). Para encerrar apos 1 ciclo, use `--once`.
 
 O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-only e persiste logs em `./logs/`.
+
+## Producao (checklist)
+
+- Arquivos:
+  - Copie `.env.production.example` -> `.env.production` e preencha os campos obrigatorios (sem commitar).
+  - Use `docker-compose.prod.yml` para rodar 2 servicos em paralelo: `jupiter-atomic` e `openocean-sequential`.
+- Start: `docker compose -f docker-compose.prod.yml up --build -d`
+- Logs: `docker compose -f docker-compose.prod.yml logs -f --tail=200`
+
+- RPC/WS: use `SOLANA_RPC_URL` privado + `SOLANA_WS_URL` (evite `api.mainnet-beta.solana.com` em `MODE=live`).
+- Modo: `MODE=live`, `BOT_PROFILE=hft`, `LOG_VERBOSE=false` e rotacao (`LOG_ROTATE_MAX_BYTES/FILES`).
+- Execucao: para usar Titan via OpenOcean, use `EXECUTION_STRATEGY=sequential` (OpenOcean nao executa no modo `atomic`).
+- Protecoes: `LIVE_PREFLIGHT_SIMULATE=true`, `MIN_BALANCE_LAMPORTS` > 0 e `MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT` (deixa o Docker reiniciar se ficar instavel).
+- OpenOcean/Titan: `OPENOCEAN_ENABLED=true`, `OPENOCEAN_ENABLED_DEX_IDS=10`, `OPENOCEAN_MIN_INTERVAL_MS>=1200` (API publica ~2 RPS), `OPENOCEAN_EVERY_N_TICKS>=2` e `OPENOCEAN_JUPITER_GATE_BPS=-50`.
+- Operacao: rode `--setup-wallet` (ATAs) e monitore `./logs/events.jsonl` (`type=executed`, `provider=openocean`, `dexId1=10`/`dexId2=10`).
 
 ## Setup wallet (ATAs)
 
 Cria ATAs idempotentes para os mints em `config.json`:
 
 - `npm.cmd run dev -- --setup-wallet`
+- Docker: `docker compose run --rm prime-aggregator --setup-wallet`
 
 Opcional (apenas `MODE=live`): rodar automaticamente no startup:
 

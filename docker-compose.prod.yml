@@ -1,0 +1,60 @@
+services:
+  jupiter-atomic:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prime-aggregator:local
+    init: true
+    env_file:
+      - .env.production
+    environment:
+      CONFIG_PATH: /app/config.json
+      LOG_PATH: /app/logs/events.jupiter.jsonl
+      BOT_PROFILE: hft
+      LOG_VERBOSE: "false"
+      EXECUTION_STRATEGY: atomic
+      OPENOCEAN_ENABLED: "false"
+      JITO_ENABLED: "true"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  openocean-sequential:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prime-aggregator:local
+    init: true
+    env_file:
+      - .env.production
+    environment:
+      CONFIG_PATH: /app/config.json
+      LOG_PATH: /app/logs/events.openocean.jsonl
+      BOT_PROFILE: hft
+      LOG_VERBOSE: "false"
+      EXECUTION_STRATEGY: sequential
+      PAIR_CONCURRENCY: "1"
+      JITO_ENABLED: "false"
+      OPENOCEAN_ENABLED: "true"
+      OPENOCEAN_ENABLED_DEX_IDS: "10"
+      OPENOCEAN_MIN_INTERVAL_MS: "1200"
+      OPENOCEAN_EVERY_N_TICKS: "2"
+      OPENOCEAN_JUPITER_GATE_BPS: "-50"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+

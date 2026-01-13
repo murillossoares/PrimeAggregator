@@ -15,5 +15,5 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN npm prune --omit=dev
 COPY --from=build /app/dist ./dist
-CMD ["node", "dist/index.js"]
-
+ENTRYPOINT ["node", "dist/index.js"]
+CMD []

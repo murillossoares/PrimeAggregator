@@ -1,5 +1,7 @@
 .env
+.env.production
 .env.bak*
+.env.production.bak*
 config.json
 dist
 node_modules
