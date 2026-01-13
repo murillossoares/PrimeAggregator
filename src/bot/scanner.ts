@@ -79,15 +79,20 @@ function estimateFeeLamports(params: {
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
   jitoTipLamports: number;
+  txCount?: number;
+  signaturesPerTx?: number;
 }): string {
-  const base = BigInt(params.baseFeeLamports);
-  const rent = BigInt(params.rentBufferLamports);
+  const txCount = BigInt(Math.max(1, Math.floor(params.txCount ?? 1)));
+  const signaturesPerTx = BigInt(Math.max(1, Math.floor(params.signaturesPerTx ?? 1)));
+
+  const base = BigInt(params.baseFeeLamports) * txCount * signaturesPerTx;
+  const rent = BigInt(params.rentBufferLamports) * txCount;
   const priority =
     params.computeUnitPriceMicroLamports > 0
       ? (BigInt(params.computeUnitLimit) * BigInt(params.computeUnitPriceMicroLamports)) / 1_000_000n
       : 0n;
   const tip = BigInt(params.jitoTipLamports);
-  return (base + rent + priority + tip).toString();
+  return (base + rent + priority * txCount + tip).toString();
 }
 
 function computeMinProfitA(params: { amountA: string; minProfitA: string; minProfitBps?: number }): string {
@@ -184,6 +189,7 @@ export async function scanPair(params: {
   amountsOverride?: string[];
   enableOpenOcean?: boolean;
   openOceanJupiterGateBps?: number;
+  openOceanSignaturesEstimate?: number;
   executionStrategy: 'atomic' | 'sequential';
   pair: BotPair;
   logEvent: Logger;
@@ -206,6 +212,7 @@ export async function scanPair(params: {
     params.pair.computeUnitPriceMicroLamports ?? params.computeUnitPriceMicroLamports;
   const baseFeeLamports = params.pair.baseFeeLamports ?? params.baseFeeLamports;
   const rentBufferLamports = params.pair.rentBufferLamports ?? params.rentBufferLamports;
+  const openOceanSignaturesEstimate = Math.max(1, Math.floor(params.openOceanSignaturesEstimate ?? 3));
   const slippageBpsLeg1 = params.pair.slippageBpsLeg1 ?? params.pair.slippageBps;
   const slippageBpsLeg2 = params.pair.slippageBpsLeg2 ?? params.pair.slippageBps;
   const slippageBpsLeg3 = params.pair.slippageBpsLeg3 ?? params.pair.slippageBps;
@@ -284,6 +291,8 @@ export async function scanPair(params: {
           computeUnitLimit,
           computeUnitPriceMicroLamports,
           jitoTipLamports,
+          txCount: 1,
+          signaturesPerTx: 1,
         });
 
         const minProfitA = computeMinProfitA({
@@ -434,6 +443,8 @@ export async function scanPair(params: {
         computeUnitLimit,
         computeUnitPriceMicroLamports,
         jitoTipLamports,
+        txCount: params.jupiter.kind === 'ultra' || params.executionStrategy === 'sequential' ? 2 : 1,
+        signaturesPerTx: 1,
       });
 
       const decision = await decideWithOptionalRust({
@@ -573,6 +584,8 @@ export async function scanPair(params: {
         computeUnitLimit,
         computeUnitPriceMicroLamports,
         jitoTipLamports,
+        txCount: 2,
+        signaturesPerTx: openOceanSignaturesEstimate,
       });
 
       const decision = await decideWithOptionalRust({

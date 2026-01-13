@@ -140,6 +140,12 @@ function deserializeOpenOceanSwapTx(swap: OpenOceanSwapData) {
   return VersionedTransaction.deserialize(raw);
 }
 
+function isLikelyMissingIntermediateFunds(sim: { err: unknown; logs?: string[] | null }) {
+  if (!sim.err) return false;
+  const logs = sim.logs ?? [];
+  return logs.some((line) => line.toLowerCase().includes('insufficient funds'));
+}
+
 export async function executeCandidate(params: {
   connection: Connection;
   wallet: Keypair;
@@ -216,6 +222,72 @@ export async function executeCandidate(params: {
     const tx1 = deserializeOpenOceanSwapTx(swap1);
     tx1.sign([params.wallet]);
 
+    if (params.mode === 'dry-run') {
+      if (params.dryRunSimulate) {
+        const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
+
+        const swap2 = await params.openOcean.swap({
+          inputMint: params.best.quote2.inputMint,
+          outputMint: params.best.quote2.outputMint,
+          amountAtomic: params.best.quote1.otherAmountThreshold,
+          inputDecimals: params.best.quote2.raw.inToken.decimals,
+          slippageBps: params.best.quote2.slippageBps,
+          account,
+        });
+        const tx2 = deserializeOpenOceanSwapTx(swap2);
+        tx2.sign([params.wallet]);
+        const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
+
+        const sim2Expected = isLikelyMissingIntermediateFunds(sim2);
+        const sim2Note = sim2Expected
+          ? 'dry-run: leg2 depends on leg1 output; sim2 may fail if wallet has no intermediate balance on-chain'
+          : undefined;
+
+        console.log(
+          JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sim1, sim2, sim2Expected, sim2Note }),
+        );
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'simulate',
+          pair: params.pair.name,
+          provider: 'openocean',
+          sim1,
+          sim2,
+          sim2Expected,
+          sim2Note,
+        });
+        return { kind: 'simulated' };
+      }
+      console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', note: 'dry-run build-only' }));
+      await params.logEvent({ ts: new Date().toISOString(), type: 'built', pair: params.pair.name, provider: 'openocean' });
+      return { kind: 'built' };
+    }
+
+    if (params.livePreflightSimulate) {
+      const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'preflight',
+        pair: params.pair.name,
+        provider: 'openocean',
+        sequential: true,
+        sim1Err: sim1.err,
+      });
+      if (sim1.err) {
+        console.log(
+          JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', preflight: false, sim1Err: sim1.err }),
+        );
+        return { kind: 'skipped', reason: 'preflight-failed' };
+      }
+    }
+
+    const latest = await params.connection.getLatestBlockhash('confirmed');
+    const sig1 = await sendSignedTx({
+      connection: params.connection,
+      tx: tx1,
+      lastValidBlockHeight: swap1.lastValidBlockHeight ?? latest.lastValidBlockHeight,
+    });
+
     const swap2 = await params.openOcean.swap({
       inputMint: params.best.quote2.inputMint,
       outputMint: params.best.quote2.outputMint,
@@ -227,21 +299,7 @@ export async function executeCandidate(params: {
     const tx2 = deserializeOpenOceanSwapTx(swap2);
     tx2.sign([params.wallet]);
 
-    if (params.mode === 'dry-run') {
-      if (params.dryRunSimulate) {
-        const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
-        const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
-        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sim1, sim2 }));
-        await params.logEvent({ ts: new Date().toISOString(), type: 'simulate', pair: params.pair.name, provider: 'openocean', sim1, sim2 });
-        return { kind: 'simulated' };
-      }
-      console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', note: 'dry-run build-only' }));
-      await params.logEvent({ ts: new Date().toISOString(), type: 'built', pair: params.pair.name, provider: 'openocean' });
-      return { kind: 'built' };
-    }
-
     if (params.livePreflightSimulate) {
-      const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
       const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -249,21 +307,11 @@ export async function executeCandidate(params: {
         pair: params.pair.name,
         provider: 'openocean',
         sequential: true,
-        sim1Err: sim1.err,
+        leg: 2,
         sim2Err: sim2.err,
       });
-      if (sim1.err || sim2.err) {
-        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', preflight: false, sim1Err: sim1.err, sim2Err: sim2.err }));
-        return { kind: 'skipped', reason: 'preflight-failed' };
-      }
     }
 
-    const latest = await params.connection.getLatestBlockhash('confirmed');
-    const sig1 = await sendSignedTx({
-      connection: params.connection,
-      tx: tx1,
-      lastValidBlockHeight: swap1.lastValidBlockHeight ?? latest.lastValidBlockHeight,
-    });
     const sig2 = await sendSignedTx({
       connection: params.connection,
       tx: tx2,

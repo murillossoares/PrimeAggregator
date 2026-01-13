@@ -197,6 +197,7 @@ async function main() {
           openOceanExecuteEnabled: env.openOceanExecuteEnabled,
           openOceanEveryNTicks: env.openOceanEveryNTicks,
           openOceanJupiterGateBps: env.openOceanJupiterGateBps,
+          openOceanSignaturesEstimate: env.openOceanSignaturesEstimate,
           minBalanceLamports: env.minBalanceLamports,
           pair,
           useRustCalc: env.useRustCalc,

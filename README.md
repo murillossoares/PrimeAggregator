@@ -131,11 +131,12 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
 
 - Habilite: `OPENOCEAN_ENABLED=true`
 - Base URL (Solana v4): `OPENOCEAN_BASE_URL=https://open-api.openocean.finance/v4/solana`
-- Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `1200ms`). A API publica pode responder `HTTP 429` e ate ban temporario (mensagem “banned for one hour”), entao ajuste conforme seu tier.
+- Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `1200ms`). A API publica pode responder `HTTP 429` e ate ban temporario (mensagem "banned for one hour"), entao ajuste conforme seu tier.
+- Fee: a OpenOcean costuma retornar swaps com multiplas assinaturas (ex: 3 => `fee ~ 15000` por TX). Ajuste `OPENOCEAN_SIGNATURES_ESTIMATE` (default `3`) para deixar o `feeEstimateLamports` mais realista.
 - Observacao: a OpenOcean entra como **second opinion** e (por padrao) so eh consultada na janela de execucao do trigger. Controles:
   - `OPENOCEAN_OBSERVE_ENABLED` / `OPENOCEAN_EXECUTE_ENABLED`
   - `OPENOCEAN_EVERY_N_TICKS` (ex: `2` = consulta a cada 2 ticks)
-  - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver “perto do breakeven”, ex `-250` bps = -2.5%)
+  - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver "perto do breakeven", ex `-250` bps = -2.5%)
 - Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
 
 ## Trigger strategy
@@ -144,6 +145,7 @@ Opcoes de gatilho para reduzir execucao em ruido:
 
 - `TRIGGER_STRATEGY=immediate` (padrao): executa assim que achar candidato lucrativo.
 - `TRIGGER_STRATEGY=avg-window`: observa o lucro liquido (conservador) por 30s, calcula a media e na janela seguinte (10s) so executa se `profit >= media`.
+- `TRIGGER_STRATEGY=vwap`: observa por 30s e calcula uma EMA do **lucro em bps** (VWAP por tick); na janela seguinte arma quando `profitBps >= EMA` e executa na reversao (trailing stop).
 - `TRIGGER_STRATEGY=bollinger`: calcula EMA + desvio padrao do **lucro em bps** e arma execucao quando rompe `EMA + K*StdDev`, executando na reversao (trailing stop).
 
 Ajustes de janela:

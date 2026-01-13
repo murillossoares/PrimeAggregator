@@ -23,7 +23,7 @@ export async function scanAndMaybeExecute(params: {
   mintDecimalsCache?: MintDecimalsCache;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
-  triggerStrategy: 'immediate' | 'avg-window' | 'bollinger';
+  triggerStrategy: 'immediate' | 'avg-window' | 'vwap' | 'bollinger';
   triggerObserveMs: number;
   triggerObserveIntervalMs: number;
   triggerExecuteMs: number;
@@ -58,6 +58,7 @@ export async function scanAndMaybeExecute(params: {
   openOceanExecuteEnabled: boolean;
   openOceanEveryNTicks: number;
   openOceanJupiterGateBps: number;
+  openOceanSignaturesEstimate: number;
   minBalanceLamports: number;
   pair: BotPair;
   useRustCalc: boolean;
@@ -171,6 +172,7 @@ export async function scanAndMaybeExecute(params: {
       amountsOverride: pickAmountsOverrideForTick(),
       enableOpenOcean,
       openOceanJupiterGateBps,
+      openOceanSignaturesEstimate: params.openOceanSignaturesEstimate,
       executionStrategy: params.executionStrategy,
       pair: params.pair,
       logEvent: params.logEvent,
@@ -315,6 +317,174 @@ export async function scanAndMaybeExecute(params: {
       reason: 'execute-window-expired',
       avgProfitLamports: avgProfit.toString(),
       maxProfitLamports: maxProfit.toString(),
+    });
+    return { kind: 'skipped', reason: 'execute-window-expired' };
+  }
+
+  if (params.triggerStrategy === 'vwap') {
+    const minSamples = Math.max(2, Math.floor(params.triggerBollingerMinSamples));
+    const lookback = Math.max(1, Math.floor(params.triggerMomentumLookback));
+    const dropPpm = Math.max(0, Math.floor(params.triggerTrailDropBps * 100));
+
+    const expectedSamples = Math.max(1, Math.round(params.triggerObserveMs / Math.max(1, params.triggerObserveIntervalMs)));
+    const autoAlpha = 2 / (expectedSamples + 1);
+    const alpha = params.triggerEmaAlpha > 0 ? params.triggerEmaAlpha : autoAlpha;
+    const safeAlpha = Math.max(0.01, Math.min(1, alpha));
+
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'trigger_start',
+      pair: params.pair.name,
+      trigger: 'vwap',
+      observeMs: params.triggerObserveMs,
+      executeMs: params.triggerExecuteMs,
+      alpha: safeAlpha,
+      minSamples,
+      lookback,
+      dropBps: params.triggerTrailDropBps,
+    });
+
+    const observeStart = Date.now();
+    let emaPpm: number | undefined;
+    let samples = 0;
+    let maxPpm: number | undefined;
+
+    while (Date.now() - observeStart < params.triggerObserveMs) {
+      const tickStartedAt = Date.now();
+      const scan = await runScan('observe');
+
+      if (scan.best) {
+        const signalPpm = scanConservativeProfitVwapPpm(scan);
+        const bestPpm = candidateConservativeProfitPpm(scan.best);
+        if (signalPpm !== undefined) {
+          emaPpm = emaPpm === undefined ? signalPpm : emaPpm + safeAlpha * (signalPpm - emaPpm);
+          samples += 1;
+        }
+        if (bestPpm !== undefined && (maxPpm === undefined || bestPpm > maxPpm)) {
+          maxPpm = bestPpm;
+        }
+      }
+
+      const elapsedMs = Date.now() - tickStartedAt;
+      const sleepMs = params.triggerObserveIntervalMs - elapsedMs;
+      if (sleepMs > 0) await sleep(sleepMs);
+    }
+
+    if (emaPpm === undefined || samples < minSamples) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        trigger: 'vwap',
+        reason: 'insufficient-samples',
+        samples,
+        minSamples,
+      });
+      return { kind: 'skipped', reason: 'insufficient-samples' };
+    }
+
+    const targetPpm = emaPpm;
+
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'trigger_stats',
+      pair: params.pair.name,
+      trigger: 'vwap',
+      samples,
+      targetBps: ppmToBps(targetPpm),
+      maxBps: maxPpm === undefined ? undefined : ppmToBps(maxPpm),
+    });
+
+    const executeStart = Date.now();
+    let armed = false;
+    let peakPpm = 0;
+    let declineTicks = 0;
+
+    while (Date.now() - executeStart < params.triggerExecuteMs) {
+      const tickStartedAt = Date.now();
+      const scan = await runScan('execute', { forceOpenOcean: armed });
+
+      const best = scan.best;
+      const ppm = best ? candidateConservativeProfitPpm(best) : undefined;
+      if (!best || ppm === undefined || !best.decision.profitable) {
+        armed = false;
+        declineTicks = 0;
+        peakPpm = 0;
+      } else if (!armed) {
+        if (ppm >= targetPpm) {
+          armed = true;
+          peakPpm = ppm;
+          declineTicks = 0;
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'trigger_arm',
+            pair: params.pair.name,
+            trigger: 'vwap',
+            amountA: best.amountA,
+            profitBps: ppmToBps(ppm),
+            targetBps: ppmToBps(targetPpm),
+          });
+        }
+      } else {
+        if (ppm > peakPpm) {
+          peakPpm = ppm;
+          declineTicks = 0;
+        } else if (ppm < peakPpm && peakPpm - ppm >= dropPpm) {
+          declineTicks += 1;
+          if (declineTicks >= lookback) {
+            await params.logEvent({
+              ts: new Date().toISOString(),
+              type: 'trigger_fire',
+              pair: params.pair.name,
+              trigger: 'vwap',
+              reason: 'trailing-stop',
+              amountA: best.amountA,
+              profitBps: ppmToBps(ppm),
+              peakBps: ppmToBps(peakPpm),
+              targetBps: ppmToBps(targetPpm),
+              declineTicks,
+              lookback,
+            });
+
+            return await executeCandidate({
+              connection: params.connection,
+              wallet: params.wallet,
+              jupiter: params.jupiter,
+              openOcean: params.openOcean,
+              mode: params.mode,
+              executionStrategy: params.executionStrategy,
+              dryRunBuild: params.dryRunBuild,
+              dryRunSimulate: params.dryRunSimulate,
+              livePreflightSimulate: params.livePreflightSimulate,
+              logEvent: params.logEvent,
+              pair: params.pair,
+              best,
+              computeUnitLimit: scan.computeUnitLimit,
+              computeUnitPriceMicroLamports: scan.computeUnitPriceMicroLamports,
+              jitoEnabled: params.jitoEnabled,
+              jitoBlockEngineUrl: params.jitoBlockEngineUrl,
+              jitoTipAccount: params.jitoTipAccount,
+              jitoWaitMs: params.jitoWaitMs,
+              jitoFallbackRpc: params.jitoFallbackRpc,
+              minBalanceLamports: params.minBalanceLamports,
+              lookupTableCache: params.lookupTableCache,
+            });
+          }
+        }
+      }
+
+      const elapsedMs = Date.now() - tickStartedAt;
+      const sleepMs = params.triggerExecuteIntervalMs - elapsedMs;
+      if (sleepMs > 0) await sleep(sleepMs);
+    }
+
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'skip',
+      pair: params.pair.name,
+      trigger: 'vwap',
+      reason: 'execute-window-expired',
+      targetBps: ppmToBps(targetPpm),
     });
     return { kind: 'skipped', reason: 'execute-window-expired' };
   }

@@ -6,7 +6,7 @@ const JitoTipModeSchema = z.enum(['fixed', 'dynamic']);
 const PriorityFeeStrategySchema = z.enum(['off', 'rpc-recent', 'helius']);
 const PriorityFeeLevelSchema = z.enum(['min', 'low', 'medium', 'high', 'veryHigh', 'unsafeMax', 'recommended']);
 const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
-const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'bollinger']);
+const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'vwap', 'bollinger']);
 const TriggerAmountModeSchema = z.enum(['all', 'rotate', 'fixed']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
@@ -102,6 +102,7 @@ export function getEnv() {
   const openOceanApiKey = process.env.OPENOCEAN_API_KEY;
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
   const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
+  const openOceanSignaturesEstimate = parseIntOr(process.env.OPENOCEAN_SIGNATURES_ESTIMATE, 3);
   const openOceanObserveEnabled = parseBoolean(process.env.OPENOCEAN_OBSERVE_ENABLED, false);
   const openOceanExecuteEnabled = parseBoolean(process.env.OPENOCEAN_EXECUTE_ENABLED, true);
   const openOceanEveryNTicks = parseIntOr(process.env.OPENOCEAN_EVERY_N_TICKS, 2);
@@ -179,6 +180,7 @@ export function getEnv() {
     openOceanApiKey,
     openOceanGasPrice,
     openOceanMinIntervalMs,
+    openOceanSignaturesEstimate,
     openOceanObserveEnabled,
     openOceanExecuteEnabled,
     openOceanEveryNTicks,
