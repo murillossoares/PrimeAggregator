@@ -88,6 +88,7 @@ Variaveis relevantes:
 
 - `DRY_RUN_BUILD=true` gera a transacao mesmo quando nao esta lucrativo.
 - `DRY_RUN_SIMULATE=true` simula a transacao e retorna logs/erros.
+- `DRY_RUN_INCLUDE_JITO_TIP=true` inclui tip/custos do Jito no calculo de lucro mesmo em `MODE=dry-run` (default `false`).
 
 ## Live preflight (opcional)
 
@@ -104,7 +105,8 @@ Quando `MODE=live`:
 Campos principais em `config.json`:
 
 - `amountA` (obrigatorio) e `amountASteps` (opcional) para testar varios tamanhos.
-- `slippageBps` (global), `slippageBpsLeg1` / `slippageBpsLeg2` / `slippageBpsLeg3` (opcional, por perna), `minProfitA`, `cooldownMs`.
+- `slippageBps` (global), `slippageBpsLeg1` / `slippageBpsLeg2` / `slippageBpsLeg3` (opcional, por perna), `cooldownMs`.
+- `minProfitA` (absoluto, em unidades de A) e `minProfitBps` (opcional, % do notional em bps). O bot usa `max(minProfitA, amountA * minProfitBps / 10_000)` como lucro liquido minimo (ja descontando fee/tip estimados).
 - `includeDexes` / `excludeDexes` (opcional) para filtrar venues no quote da Jupiter.
 - `computeUnitLimit`, `computeUnitPriceMicroLamports` (override por par).
 - `baseFeeLamports`, `rentBufferLamports` (override por par para custo estimado).
@@ -129,8 +131,11 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
 
 - Habilite: `OPENOCEAN_ENABLED=true`
 - Base URL (Solana v4): `OPENOCEAN_BASE_URL=https://open-api.openocean.finance/v4/solana`
-- Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `600ms`).
-- Observacao: no scan do loop, a OpenOcean eh consultada apenas para **1 tamanho** (o melhor tamanho visto no scan Jupiter daquele ciclo) para nao estourar o limite de 2 RPS.
+- Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `1200ms`). A API publica pode responder `HTTP 429` e ate ban temporario (mensagem “banned for one hour”), entao ajuste conforme seu tier.
+- Observacao: a OpenOcean entra como **second opinion** e (por padrao) so eh consultada na janela de execucao do trigger. Controles:
+  - `OPENOCEAN_OBSERVE_ENABLED` / `OPENOCEAN_EXECUTE_ENABLED`
+  - `OPENOCEAN_EVERY_N_TICKS` (ex: `2` = consulta a cada 2 ticks)
+  - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver “perto do breakeven”, ex `-250` bps = -2.5%)
 - Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
 
 ## Trigger strategy
@@ -149,7 +154,9 @@ Ajustes do modo `bollinger`:
 
 - `TRIGGER_BOLLINGER_K` (default `1.5`), `TRIGGER_EMA_ALPHA` (`0` = auto), `TRIGGER_BOLLINGER_MIN_SAMPLES`
 - `TRIGGER_MOMENTUM_LOOKBACK`, `TRIGGER_TRAIL_DROP_BPS`
-- `TRIGGER_EMERGENCY_SIGMA` (`0` desativa; ex `4` para “4-sigma”)
+- `TRIGGER_EMERGENCY_SIGMA` (`0` desativa; ex `4` para "4-sigma")
+- `TRIGGER_AMOUNT_MODE=all|rotate|fixed` controla como usar `amountASteps` no trigger (`fixed` = tamanho fixo por ciclo; `rotate` = round-robin por tick).
+- `TRIGGER_MAX_AMOUNTS_PER_TICK` limita quantos tamanhos sao cotados por tick.
 
 ## Seguranca
 
@@ -160,6 +167,7 @@ Ajustes do modo `bollinger`:
 
 - `PAIR_CONCURRENCY` paraleliza o scan entre pares.
 - `QUOTE_CACHE_TTL_MS` cache curto de quotes (Swap v1).
+- `JUP_MIN_INTERVAL_MS` / `JUP_BACKOFF_*` aplicam rate limit + backoff global para as chamadas Jupiter (reduz `HTTP 429`).
 - `LUT_CACHE_TTL_MS` cache de Address Lookup Tables para acelerar builds atomicos.
 - `MIN_BALANCE_LAMPORTS` evita tentar execucao sem saldo suficiente.
 - `MAX_ERRORS_BEFORE_EXIT` / `MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT` mata o processo se ficar instavel (0 = desativado).

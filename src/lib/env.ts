@@ -7,6 +7,7 @@ const PriorityFeeStrategySchema = z.enum(['off', 'rpc-recent', 'helius']);
 const PriorityFeeLevelSchema = z.enum(['min', 'low', 'medium', 'high', 'veryHigh', 'unsafeMax', 'recommended']);
 const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
 const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'bollinger']);
+const TriggerAmountModeSchema = z.enum(['all', 'rotate', 'fixed']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -42,8 +43,11 @@ export function getEnv() {
   const triggerMomentumLookback = parseIntOr(process.env.TRIGGER_MOMENTUM_LOOKBACK, 2);
   const triggerTrailDropBps = parseIntOr(process.env.TRIGGER_TRAIL_DROP_BPS, 1);
   const triggerEmergencySigma = parseFloatOr(process.env.TRIGGER_EMERGENCY_SIGMA, 0);
+  const triggerAmountMode = TriggerAmountModeSchema.parse(process.env.TRIGGER_AMOUNT_MODE ?? 'rotate');
+  const triggerMaxAmountsPerTick = parseIntOr(process.env.TRIGGER_MAX_AMOUNTS_PER_TICK, 1);
   const dryRunBuild = parseBoolean(process.env.DRY_RUN_BUILD, false);
   const dryRunSimulate = parseBoolean(process.env.DRY_RUN_SIMULATE, false);
+  const dryRunIncludeJitoTip = parseBoolean(process.env.DRY_RUN_INCLUDE_JITO_TIP, false);
   const livePreflightSimulate = parseBoolean(process.env.LIVE_PREFLIGHT_SIMULATE, true);
   const priorityFeeStrategy = PriorityFeeStrategySchema.parse(process.env.PRIORITY_FEE_STRATEGY ?? 'off');
   const priorityFeeLevel = PriorityFeeLevelSchema.parse(process.env.PRIORITY_FEE_LEVEL ?? 'recommended');
@@ -88,12 +92,20 @@ export function getEnv() {
   const jupUltraBaseUrl = process.env.JUP_ULTRA_BASE_URL ?? 'https://api.jup.ag';
   const jupApiKey = process.env.JUP_API_KEY;
   const jupUseUltra = parseBoolean(process.env.JUP_USE_ULTRA, false);
+  const jupMinIntervalMs = parseIntOr(process.env.JUP_MIN_INTERVAL_MS, 150);
+  const jupBackoffMaxAttempts = parseIntOr(process.env.JUP_BACKOFF_MAX_ATTEMPTS, 4);
+  const jupBackoffBaseMs = parseIntOr(process.env.JUP_BACKOFF_BASE_MS, 250);
+  const jupBackoffMaxMs = parseIntOr(process.env.JUP_BACKOFF_MAX_MS, 5000);
 
   const openOceanEnabled = parseBoolean(process.env.OPENOCEAN_ENABLED, false);
   const openOceanBaseUrl = process.env.OPENOCEAN_BASE_URL ?? 'https://open-api.openocean.finance/v4/solana';
   const openOceanApiKey = process.env.OPENOCEAN_API_KEY;
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
-  const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 600);
+  const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
+  const openOceanObserveEnabled = parseBoolean(process.env.OPENOCEAN_OBSERVE_ENABLED, false);
+  const openOceanExecuteEnabled = parseBoolean(process.env.OPENOCEAN_EXECUTE_ENABLED, true);
+  const openOceanEveryNTicks = parseIntOr(process.env.OPENOCEAN_EVERY_N_TICKS, 2);
+  const openOceanJupiterGateBps = parseIntOr(process.env.OPENOCEAN_JUPITER_GATE_BPS, -250);
 
   const useRustCalc = parseBoolean(process.env.USE_RUST_CALC, false);
   const rustCalcPath = process.env.RUST_CALC_PATH ?? './target/release/arb_calc';
@@ -112,8 +124,11 @@ export function getEnv() {
     triggerMomentumLookback,
     triggerTrailDropBps,
     triggerEmergencySigma,
+    triggerAmountMode,
+    triggerMaxAmountsPerTick,
     dryRunBuild,
     dryRunSimulate,
+    dryRunIncludeJitoTip,
     livePreflightSimulate,
     priorityFeeStrategy,
     priorityFeeLevel,
@@ -155,11 +170,19 @@ export function getEnv() {
     jupUltraBaseUrl,
     jupApiKey,
     jupUseUltra,
+    jupMinIntervalMs,
+    jupBackoffMaxAttempts,
+    jupBackoffBaseMs,
+    jupBackoffMaxMs,
     openOceanEnabled,
     openOceanBaseUrl,
     openOceanApiKey,
     openOceanGasPrice,
     openOceanMinIntervalMs,
+    openOceanObserveEnabled,
+    openOceanExecuteEnabled,
+    openOceanEveryNTicks,
+    openOceanJupiterGateBps,
     useRustCalc,
     rustCalcPath,
   };

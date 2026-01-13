@@ -15,6 +15,7 @@ const PairSchema = z.object({
   includeDexes: z.array(z.string().min(1)).optional(),
   excludeDexes: z.array(z.string().min(1)).optional(),
   minProfitA: z.string().regex(/^\d+$/).default('0'),
+  minProfitBps: z.number().int().min(0).max(10_000).optional(),
   cooldownMs: z.number().int().min(0).default(0),
   maxNotionalA: z.string().regex(/^\d+$/).optional(),
   computeUnitLimit: z.number().int().min(1).optional(),

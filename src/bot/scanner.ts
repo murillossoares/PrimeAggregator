@@ -61,9 +61,16 @@ function uniqStrings(values: string[]) {
   return Array.from(new Set(values));
 }
 
-function parseAmountList(pair: BotPair): string[] {
+function normalizeAmountList(values: string[]) {
+  return uniqStrings(values.filter((v) => /^\d+$/.test(v)));
+}
+
+function parseAmountList(pair: BotPair, override?: string[]): string[] {
+  const normalizedOverride = override?.length ? normalizeAmountList(override) : [];
+  if (normalizedOverride.length) return normalizedOverride;
+
   const steps = pair.amountASteps?.length ? pair.amountASteps : [pair.amountA];
-  return uniqStrings(steps.filter((v) => /^\d+$/.test(v)));
+  return normalizeAmountList(steps);
 }
 
 function estimateFeeLamports(params: {
@@ -81,6 +88,18 @@ function estimateFeeLamports(params: {
       : 0n;
   const tip = BigInt(params.jitoTipLamports);
   return (base + rent + priority + tip).toString();
+}
+
+function computeMinProfitA(params: { amountA: string; minProfitA: string; minProfitBps?: number }): string {
+  const minProfitAbs = BigInt(params.minProfitA);
+  const bps = params.minProfitBps;
+  if (bps === undefined || bps <= 0) return minProfitAbs.toString();
+
+  const amountA = BigInt(params.amountA);
+  if (amountA <= 0n) return minProfitAbs.toString();
+
+  const minProfitPct = (amountA * BigInt(Math.floor(bps))) / 10_000n;
+  return (minProfitPct > minProfitAbs ? minProfitPct : minProfitAbs).toString();
 }
 
 function pickBestCandidate(candidates: Candidate[]): Candidate | undefined {
@@ -162,6 +181,9 @@ export async function scanPair(params: {
   jupiter: JupiterClient;
   openOcean?: OpenOceanClient;
   mintDecimalsCache?: MintDecimalsCache;
+  amountsOverride?: string[];
+  enableOpenOcean?: boolean;
+  openOceanJupiterGateBps?: number;
   executionStrategy: 'atomic' | 'sequential';
   pair: BotPair;
   logEvent: Logger;
@@ -178,7 +200,7 @@ export async function scanPair(params: {
   useRustCalc: boolean;
   rustCalcPath: string;
 }): Promise<ScanSummary> {
-  const amounts = parseAmountList(params.pair);
+  const amounts = parseAmountList(params.pair, params.amountsOverride);
   const computeUnitLimit = params.pair.computeUnitLimit ?? params.computeUnitLimit;
   const computeUnitPriceMicroLamports =
     params.pair.computeUnitPriceMicroLamports ?? params.computeUnitPriceMicroLamports;
@@ -264,11 +286,16 @@ export async function scanPair(params: {
           jitoTipLamports,
         });
 
+        const minProfitA = computeMinProfitA({
+          amountA,
+          minProfitA: params.pair.minProfitA,
+          minProfitBps: params.pair.minProfitBps,
+        });
         const decision = decidePathInTs({
           amountIn: amountA,
           finalOut: quote3.outAmount,
           finalMinOut: quote3.otherAmountThreshold,
-          minProfit: params.pair.minProfitA,
+          minProfit: minProfitA,
           feeEstimateLamports,
         });
 
@@ -323,8 +350,9 @@ export async function scanPair(params: {
 
   const candidates: Candidate[] = [];
 
+  const enableOpenOcean = params.enableOpenOcean ?? true;
   const canUseOpenOcean =
-    params.executionStrategy === 'sequential' && Boolean(params.openOcean) && Boolean(params.mintDecimalsCache);
+    enableOpenOcean && params.executionStrategy === 'sequential' && Boolean(params.openOcean) && Boolean(params.mintDecimalsCache);
   let aDecimals: number | undefined;
   let bDecimals: number | undefined;
   if (canUseOpenOcean) {
@@ -416,7 +444,11 @@ export async function scanPair(params: {
         quote1MinOut: quote1.otherAmountThreshold,
         quote2Out: quote2.outAmount,
         quote2MinOut: quote2.otherAmountThreshold,
-        minProfit: params.pair.minProfitA,
+        minProfit: computeMinProfitA({
+          amountA,
+          minProfitA: params.pair.minProfitA,
+          minProfitBps: params.pair.minProfitBps,
+        }),
         feeEstimateLamports,
       });
 
@@ -452,7 +484,57 @@ export async function scanPair(params: {
   }
 
   if (canUseOpenOcean && aDecimals !== undefined && bDecimals !== undefined) {
-    const referenceAmountA = pickBestCandidate(candidates)?.amountA ?? amounts[0];
+    const bestJupiter = pickBestCandidate(candidates);
+    if (!bestJupiter) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'openocean_skip',
+        pair: params.pair.name,
+        reason: 'no_jupiter_candidate',
+      });
+      return {
+        amountsTried: amounts.length,
+        candidates,
+        best: pickBestCandidate(candidates),
+        computeUnitLimit,
+        computeUnitPriceMicroLamports,
+        baseFeeLamports,
+        rentBufferLamports,
+      };
+    }
+
+    const gateBps = params.openOceanJupiterGateBps;
+    if (gateBps !== undefined) {
+      try {
+        const profit = BigInt(bestJupiter.decision.conservativeProfit);
+        const amountA = BigInt(bestJupiter.amountA);
+        const bps = amountA > 0n ? Number((profit * 10_000n) / amountA) : undefined;
+        if (bps !== undefined && Number.isFinite(bps) && bps < gateBps) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'openocean_skip',
+            pair: params.pair.name,
+            reason: 'jupiter_gate',
+            jupiterBps: bps,
+            gateBps,
+            amountA: bestJupiter.amountA,
+          });
+          return {
+            amountsTried: amounts.length,
+            candidates,
+            best: pickBestCandidate(candidates),
+            computeUnitLimit,
+            computeUnitPriceMicroLamports,
+            baseFeeLamports,
+            rentBufferLamports,
+          };
+        }
+      } catch {
+        // ignore gate parse errors
+      }
+    }
+
+    const referenceAmountA = bestJupiter.amountA ?? amounts[0];
 
     try {
       const openOcean = params.openOcean as OpenOceanClient;
@@ -501,7 +583,11 @@ export async function scanPair(params: {
         quote1MinOut: quote1.otherAmountThreshold,
         quote2Out: quote2.outAmount,
         quote2MinOut: quote2.otherAmountThreshold,
-        minProfit: params.pair.minProfitA,
+        minProfit: computeMinProfitA({
+          amountA: referenceAmountA,
+          minProfitA: params.pair.minProfitA,
+          minProfitBps: params.pair.minProfitBps,
+        }),
         feeEstimateLamports,
       });
 

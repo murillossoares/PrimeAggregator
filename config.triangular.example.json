@@ -10,9 +10,9 @@
       "slippageBps": 50,
       "slippageBpsLeg2": 100,
       "slippageBpsLeg3": 100,
-      "minProfitA": "10000",
+      "minProfitA": "0",
+      "minProfitBps": 25,
       "cooldownMs": 1500
     }
   ]
 }
-

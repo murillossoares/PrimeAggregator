@@ -34,6 +34,8 @@ export async function scanAndMaybeExecute(params: {
   triggerMomentumLookback: number;
   triggerTrailDropBps: number;
   triggerEmergencySigma: number;
+  triggerAmountMode: 'all' | 'rotate' | 'fixed';
+  triggerMaxAmountsPerTick: number;
   dryRunBuild: boolean;
   dryRunSimulate: boolean;
   livePreflightSimulate: boolean;
@@ -52,6 +54,10 @@ export async function scanAndMaybeExecute(params: {
   jitoWaitMs: number;
   jitoFallbackRpc: boolean;
   jitoTipAccount?: string;
+  openOceanObserveEnabled: boolean;
+  openOceanExecuteEnabled: boolean;
+  openOceanEveryNTicks: number;
+  openOceanJupiterGateBps: number;
   minBalanceLamports: number;
   pair: BotPair;
   useRustCalc: boolean;
@@ -91,14 +97,80 @@ export async function scanAndMaybeExecute(params: {
     return Number.isFinite(asNumber) ? asNumber : undefined;
   }
 
-  async function runScan() {
+  function normalizeAmountList(values: string[]) {
+    return Array.from(new Set(values.filter((v) => /^\d+$/.test(v))));
+  }
+
+  const maxAmountsPerTick = Math.max(0, Math.floor(params.triggerMaxAmountsPerTick));
+  const configuredAmounts = normalizeAmountList(
+    params.pair.amountASteps?.length ? params.pair.amountASteps : [params.pair.amountA],
+  );
+  const eligibleAmounts =
+    params.pair.maxNotionalA && /^\d+$/.test(params.pair.maxNotionalA)
+      ? configuredAmounts.filter((amount) => BigInt(amount) <= BigInt(params.pair.maxNotionalA as string))
+      : configuredAmounts;
+  let amountCursor = 0;
+  const preferredAmountIndex =
+    /^\d+$/.test(params.pair.amountA) && eligibleAmounts.includes(params.pair.amountA)
+      ? eligibleAmounts.indexOf(params.pair.amountA)
+      : 0;
+  const fixedAmounts = (() => {
+    if (params.triggerAmountMode !== 'fixed') return undefined;
+    if (maxAmountsPerTick <= 0) return undefined;
+    if (eligibleAmounts.length === 0) return undefined;
+    if (maxAmountsPerTick >= eligibleAmounts.length) return eligibleAmounts;
+    const picked: string[] = [];
+    for (let i = 0; i < maxAmountsPerTick; i++) {
+      picked.push(eligibleAmounts[(preferredAmountIndex + i) % eligibleAmounts.length] as string);
+    }
+    return picked;
+  })();
+
+  function pickAmountsOverrideForTick(): string[] | undefined {
+    if (params.triggerAmountMode === 'all') return undefined;
+    if (maxAmountsPerTick <= 0) return undefined;
+    if (eligibleAmounts.length === 0) return undefined;
+    if (maxAmountsPerTick >= eligibleAmounts.length) return eligibleAmounts;
+    if (params.triggerAmountMode === 'fixed') return fixedAmounts;
+
+    const picked: string[] = [];
+    for (let i = 0; i < maxAmountsPerTick; i++) {
+      picked.push(eligibleAmounts[(amountCursor + i) % eligibleAmounts.length] as string);
+    }
+    amountCursor = (amountCursor + maxAmountsPerTick) % eligibleAmounts.length;
+    return picked;
+  }
+
+  type ScanPhase = 'single' | 'observe' | 'execute';
+  const openOceanTicks: Record<ScanPhase, number> = { single: 0, observe: 0, execute: 0 };
+  const openOceanEveryNTicks = Math.max(1, Math.floor(params.openOceanEveryNTicks));
+
+  function shouldUseOpenOcean(phase: ScanPhase, force: boolean) {
+    if (!params.openOcean) return false;
+    const phaseEnabled =
+      phase === 'observe' ? params.openOceanObserveEnabled : params.openOceanExecuteEnabled;
+    if (!phaseEnabled) return false;
+    if (force) return true;
+
+    const tick = openOceanTicks[phase];
+    openOceanTicks[phase] = tick + 1;
+    return tick % openOceanEveryNTicks === 0;
+  }
+
+  async function runScan(phase: ScanPhase, options: { forceOpenOcean?: boolean } = {}) {
     const scanStartedAt = Date.now();
+    const forceOpenOcean = Boolean(options.forceOpenOcean);
+    const enableOpenOcean = shouldUseOpenOcean(phase, forceOpenOcean);
+    const openOceanJupiterGateBps = forceOpenOcean ? undefined : params.openOceanJupiterGateBps;
     const scan = await scanPair({
       connection: params.connection,
       wallet: params.wallet,
       jupiter: params.jupiter,
       openOcean: params.openOcean,
       mintDecimalsCache: params.mintDecimalsCache,
+      amountsOverride: pickAmountsOverrideForTick(),
+      enableOpenOcean,
+      openOceanJupiterGateBps,
       executionStrategy: params.executionStrategy,
       pair: params.pair,
       logEvent: params.logEvent,
@@ -123,6 +195,7 @@ export async function scanAndMaybeExecute(params: {
       trigger: params.triggerStrategy,
       candidates: scan.candidates.length,
       scanMs: Date.now() - scanStartedAt,
+      openOceanEnabled: enableOpenOcean,
     });
 
     return scan;
@@ -144,7 +217,7 @@ export async function scanAndMaybeExecute(params: {
 
     while (Date.now() - observeStart < params.triggerObserveMs) {
       const tickStartedAt = Date.now();
-      const scan = await runScan();
+      const scan = await runScan('observe');
 
       const best = scan.best;
       if (best) {
@@ -187,7 +260,7 @@ export async function scanAndMaybeExecute(params: {
     const executeStart = Date.now();
     while (Date.now() - executeStart < params.triggerExecuteMs) {
       const tickStartedAt = Date.now();
-      const scan = await runScan();
+      const scan = await runScan('execute');
 
       if (scan.best) {
         const profit = BigInt(scan.best.decision.conservativeProfit);
@@ -281,7 +354,7 @@ export async function scanAndMaybeExecute(params: {
 
     while (Date.now() - observeStart < params.triggerObserveMs) {
       const tickStartedAt = Date.now();
-      const scan = await runScan();
+      const scan = await runScan('observe');
 
       if (scan.best) {
         const signalPpm = scanConservativeProfitVwapPpm(scan);
@@ -389,7 +462,7 @@ export async function scanAndMaybeExecute(params: {
 
     while (Date.now() - executeStart < params.triggerExecuteMs) {
       const tickStartedAt = Date.now();
-      const scan = await runScan();
+      const scan = await runScan('execute', { forceOpenOcean: armed });
 
       const best = scan.best;
       const ppm = best ? candidateConservativeProfitPpm(best) : undefined;
@@ -516,7 +589,7 @@ export async function scanAndMaybeExecute(params: {
     return { kind: 'skipped', reason: 'execute-window-expired' };
   }
 
-  const scan = await runScan();
+  const scan = await runScan('single');
 
   if (!scan.best) {
     await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, reason: 'no-candidate' });

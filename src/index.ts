@@ -6,6 +6,7 @@ import { loadWallet } from './solana/wallet.js';
 import { makeConnection } from './solana/connection.js';
 import { makeJupiterClient } from './jupiter/client.js';
 import { withJupiterQuoteCache } from './jupiter/cache.js';
+import { withJupiterRateLimit } from './jupiter/limit.js';
 import { scanAndMaybeExecute } from './bot/loop.js';
 import { getEnv } from './lib/env.js';
 import { createJsonlLogger } from './lib/logger.js';
@@ -33,6 +34,9 @@ async function main() {
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
   const logEvent = createJsonlLogger(env.logPath);
+
+  const effectiveJitoEnabled = env.jitoEnabled && (env.mode === 'live' || env.dryRunIncludeJitoTip);
+  const effectiveJitoTipLamports = effectiveJitoEnabled ? env.jitoTipLamports : 0;
   const priorityFeeEstimator = new PriorityFeeEstimator({
     strategy: env.priorityFeeStrategy,
     level: env.priorityFeeLevel,
@@ -43,7 +47,7 @@ async function main() {
     targetAccountLimit: env.priorityFeeTargetAccountLimit,
   });
 
-  const allowPriorityFees = !(env.jitoEnabled && !env.priorityFeeWithJito);
+  const allowPriorityFees = !(effectiveJitoEnabled && !env.priorityFeeWithJito);
   let dynamicComputeUnitPriceMicroLamports = allowPriorityFees ? env.computeUnitPriceMicroLamports : 0;
   if (allowPriorityFees && dynamicComputeUnitPriceMicroLamports === 0 && env.priorityFeeStrategy !== 'off') {
     dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
@@ -55,7 +59,13 @@ async function main() {
     apiKey: env.jupApiKey,
     useUltra: env.jupUseUltra,
   });
-  const cachedJupiter = withJupiterQuoteCache(jupiter, env.quoteCacheTtlMs);
+  const rateLimitedJupiter = withJupiterRateLimit(jupiter, {
+    minIntervalMs: env.jupMinIntervalMs,
+    maxAttempts: env.jupBackoffMaxAttempts,
+    baseDelayMs: env.jupBackoffBaseMs,
+    maxDelayMs: env.jupBackoffMaxMs,
+  });
+  const cachedJupiter = withJupiterQuoteCache(rateLimitedJupiter, env.quoteCacheTtlMs);
   const openOcean = env.openOceanEnabled
     ? new OpenOceanClient({
         baseUrl: env.openOceanBaseUrl,
@@ -78,9 +88,12 @@ async function main() {
         balanceLamports,
         pairConcurrency: env.pairConcurrency,
         triggerStrategy: env.triggerStrategy,
+        triggerAmountMode: env.triggerAmountMode,
         solanaCommitment: env.solanaCommitment,
         solanaWs: Boolean(env.solanaWsUrl),
         openOceanEnabled: env.openOceanEnabled,
+        dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
+        jitoEnabled: effectiveJitoEnabled,
         priorityFeeStrategy: env.priorityFeeStrategy,
         priorityFeeLevel: env.priorityFeeLevel,
         computeUnitPriceMicroLamports: dynamicComputeUnitPriceMicroLamports,
@@ -99,9 +112,12 @@ async function main() {
     pubkey: wallet.publicKey.toBase58(),
     balanceLamports,
     triggerStrategy: env.triggerStrategy,
+    triggerAmountMode: env.triggerAmountMode,
     solanaCommitment: env.solanaCommitment,
     solanaWs: Boolean(env.solanaWsUrl),
     openOceanEnabled: env.openOceanEnabled,
+    dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
+    jitoEnabled: effectiveJitoEnabled,
   });
 
   if (args.setupWallet) {
@@ -157,6 +173,8 @@ async function main() {
           triggerMomentumLookback: env.triggerMomentumLookback,
           triggerTrailDropBps: env.triggerTrailDropBps,
           triggerEmergencySigma: env.triggerEmergencySigma,
+          triggerAmountMode: env.triggerAmountMode,
+          triggerMaxAmountsPerTick: env.triggerMaxAmountsPerTick,
           dryRunBuild: env.dryRunBuild,
           dryRunSimulate: env.dryRunSimulate,
           livePreflightSimulate: env.livePreflightSimulate,
@@ -165,9 +183,9 @@ async function main() {
           rentBufferLamports: env.rentBufferLamports,
           computeUnitLimit: env.computeUnitLimit,
           computeUnitPriceMicroLamports: dynamicComputeUnitPriceMicroLamports,
-          jitoEnabled: env.jitoEnabled,
+          jitoEnabled: effectiveJitoEnabled,
           jitoBlockEngineUrl: env.jitoBlockEngineUrl,
-          jitoTipLamports: env.jitoTipLamports,
+          jitoTipLamports: effectiveJitoTipLamports,
           jitoTipMode: env.jitoTipMode,
           jitoMinTipLamports: env.jitoMinTipLamports,
           jitoMaxTipLamports: env.jitoMaxTipLamports,
@@ -175,6 +193,10 @@ async function main() {
           jitoWaitMs: env.jitoWaitMs,
           jitoFallbackRpc: env.jitoFallbackRpc,
           jitoTipAccount: env.jitoTipAccount,
+          openOceanObserveEnabled: env.openOceanObserveEnabled,
+          openOceanExecuteEnabled: env.openOceanExecuteEnabled,
+          openOceanEveryNTicks: env.openOceanEveryNTicks,
+          openOceanJupiterGateBps: env.openOceanJupiterGateBps,
           minBalanceLamports: env.minBalanceLamports,
           pair,
           useRustCalc: env.useRustCalc,
