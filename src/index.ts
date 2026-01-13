@@ -32,7 +32,10 @@ async function main() {
   const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
-  const logEvent = createJsonlLogger(env.logPath);
+  const logEvent = createJsonlLogger(env.logPath, {
+    rotateMaxBytes: env.logRotateMaxBytes,
+    rotateMaxFiles: env.logRotateMaxFiles,
+  });
 
   const effectiveJitoEnabled = env.jitoEnabled && (env.mode === 'live' || env.dryRunIncludeJitoTip);
   const effectiveJitoTipLamports = effectiveJitoEnabled ? env.jitoTipLamports : 0;

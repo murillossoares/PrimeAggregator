@@ -52,6 +52,13 @@ Se `JITO_ENABLED=true`, por padrao o bot nao paga priority fee (usa tip). Para h
 - Build: `npm.cmd run build`
 - Start: `npm.cmd run start`
 
+## Docker / Docker Compose
+
+- Build: `docker build -t prime-aggregator .`
+- Compose: `docker compose up --build`
+
+O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-only e persiste logs em `./logs/`.
+
 ## Setup wallet (ATAs)
 
 Cria ATAs idempotentes para os mints em `config.json`:
@@ -99,6 +106,7 @@ Quando `MODE=live`:
 ## Logging
 
 - `LOG_PATH=./logs/events.jsonl` grava eventos em JSONL (startup, candidates, simulate, executed, etc).
+- Rotacao (opcional): `LOG_ROTATE_MAX_BYTES` / `LOG_ROTATE_MAX_FILES` (ex: `10485760` + `5` para ~10MB e 5 arquivos).
 
 ## Config (por par)
 

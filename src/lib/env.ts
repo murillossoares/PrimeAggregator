@@ -63,6 +63,8 @@ export function getEnv() {
   const heliusApiKey = process.env.HELIUS_API_KEY;
   const heliusRpcUrl = process.env.HELIUS_RPC_URL;
   const logPath = process.env.LOG_PATH ?? './logs/events.jsonl';
+  const logRotateMaxBytes = parseIntOr(process.env.LOG_ROTATE_MAX_BYTES, 0);
+  const logRotateMaxFiles = parseIntOr(process.env.LOG_ROTATE_MAX_FILES, 0);
   const baseFeeLamports = parseIntOr(process.env.BASE_FEE_LAMPORTS, 5000);
   const rentBufferLamports = parseIntOr(process.env.RENT_BUFFER_LAMPORTS, 0);
   const computeUnitLimit = parseIntOr(process.env.COMPUTE_UNIT_LIMIT, 1_400_000);
@@ -149,6 +151,8 @@ export function getEnv() {
     heliusApiKey,
     heliusRpcUrl,
     logPath,
+    logRotateMaxBytes,
+    logRotateMaxFiles,
     baseFeeLamports,
     rentBufferLamports,
     computeUnitLimit,

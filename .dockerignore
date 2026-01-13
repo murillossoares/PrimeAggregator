@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+dist
+logs
+target
+tmp
+.env
+.env.bak*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
