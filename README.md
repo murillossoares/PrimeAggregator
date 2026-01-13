@@ -85,9 +85,10 @@ O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-onl
 - RPC/WS: use `SOLANA_RPC_URL` privado + `SOLANA_WS_URL` (evite `api.mainnet-beta.solana.com` em `MODE=live`).
 - Modo: `MODE=live`, `BOT_PROFILE=hft`, `LOG_VERBOSE=false` e rotacao (`LOG_ROTATE_MAX_BYTES/FILES`).
 - Execucao: para usar Titan via OpenOcean, use `EXECUTION_STRATEGY=sequential` (OpenOcean nao executa no modo `atomic`).
+- Paralelo: rodar os 2 servicos com o mesmo `config.json`/wallet pode duplicar execucoes; em producao, prefira separar pares (configs diferentes) e/ou wallets.
 - Protecoes: `LIVE_PREFLIGHT_SIMULATE=true`, `MIN_BALANCE_LAMPORTS` > 0 e `MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT` (deixa o Docker reiniciar se ficar instavel).
 - OpenOcean/Titan: `OPENOCEAN_ENABLED=true`, `OPENOCEAN_ENABLED_DEX_IDS=10`, `OPENOCEAN_MIN_INTERVAL_MS>=1200` (API publica ~2 RPS), `OPENOCEAN_EVERY_N_TICKS>=2` e `OPENOCEAN_JUPITER_GATE_BPS=-50`.
-- Operacao: rode `--setup-wallet` (ATAs) e monitore `./logs/events.jsonl` (`type=executed`, `provider=openocean`, `dexId1=10`/`dexId2=10`).
+- Operacao: rode `--setup-wallet` (ATAs) e monitore `./logs/events.jupiter.jsonl` e `./logs/events.openocean.jsonl` (ex: `type=executed`, `provider=openocean`, `dexId1=10`/`dexId2=10`).
 
 ## Setup wallet (ATAs)
 
