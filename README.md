@@ -1,6 +1,6 @@
-﻿# PrimeAggregator (Jupiter-only MVP)
+# PrimeAggregator (Jupiter + OpenOcean/Titan)
 
-Bot de arbitragem (MVP) focado em Jupiter. Faz loop `A -> B -> A`, com execucao atomica opcional (uma unica transacao) e modo dry-run com simulacao.
+Bot de arbitragem (MVP) com Jupiter como base e integracao opcional com OpenOcean (meta-agregador que inclui Titan). Faz loop `A -> B -> A`, com execucao atomica opcional (uma unica transacao) e modo dry-run com simulacao.
 
 ## Requisitos
 
@@ -21,6 +21,12 @@ Bot de arbitragem (MVP) focado em Jupiter. Faz loop `A -> B -> A`, com execucao 
 Opcional: perfil "HFT" (mais conservador com I/O e OpenOcean):
 
 - `BOT_PROFILE=hft`
+- Se `LOG_VERBOSE` nao estiver definido, o default vira `false` (menos I/O).
+- Forca `OPENOCEAN_OBSERVE_ENABLED=false` e `OPENOCEAN_EVERY_N_TICKS>=2` para reduzir risco de rate-limit/ban.
+
+Quando `.env.example` mudar, mantenha seu `.env` atualizado (sem sobrescrever valores existentes):
+
+- `npm.cmd run sync-env`
 
 ## Helius / QuickNode (alto impacto)
 
@@ -53,13 +59,18 @@ Se `JITO_ENABLED=true`, por padrao o bot nao paga priority fee (usa tip). Para h
 ## Rodar
 
 - Dev: `npm.cmd run dev`
+- Dev (uma iteracao): `npm.cmd run dev -- --once`
 - Build: `npm.cmd run build`
 - Start: `npm.cmd run start`
+- Start (uma iteracao): `npm.cmd run start -- --once`
 
 ## Docker / Docker Compose
 
 - Build: `docker build -t prime-aggregator .`
 - Compose: `docker compose up --build`
+- Compose (uma iteracao e sai): `docker compose run --rm prime-aggregator node dist/index.js --once`
+
+Por padrao, o bot roda em loop infinito (ate voce parar o processo). Para encerrar apos 1 ciclo, use `--once`.
 
 O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-only e persiste logs em `./logs/`.
 
@@ -112,6 +123,8 @@ Quando `MODE=live`:
 - `LOG_PATH=./logs/events.jsonl` grava eventos em JSONL (startup, candidates, simulate, executed, etc).
 - `LOG_VERBOSE=true|false`: quando `false`, reduz I/O (loga apenas candidates lucrativos e pula eventos grandes como `simulate`).
 - Rotacao (opcional): `LOG_ROTATE_MAX_BYTES` / `LOG_ROTATE_MAX_FILES` (ex: `10485760` + `5` para ~10MB e 5 arquivos).
+
+No Docker Compose, stdout/stderr do container usa rotacao do driver `json-file` (veja `docker-compose.yml`).
 
 ## Config (por par)
 
