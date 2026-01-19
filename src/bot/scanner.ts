@@ -457,6 +457,7 @@ export async function scanPair(params: {
                 outputMint: params.pair.bMint,
                 amount: amountA,
                 taker: params.wallet.publicKey.toBase58(),
+                excludeDexes: excludeDexes?.length ? excludeDexes.join(',') : undefined,
               })
             : await params.jupiter.quoteExactIn({
                 inputMint: params.pair.aMint,
@@ -475,6 +476,7 @@ export async function scanPair(params: {
                 outputMint: params.pair.aMint,
                 amount: quote1OutMin,
                 taker: params.wallet.publicKey.toBase58(),
+                excludeDexes: excludeDexes?.length ? excludeDexes.join(',') : undefined,
               })
             : await params.jupiter.quoteExactIn({
                 inputMint: params.pair.bMint,
@@ -527,7 +529,7 @@ export async function scanPair(params: {
           minProfitA: params.pair.minProfitA,
           minProfitBps: params.pair.minProfitBps,
         }),
-        feeEstimateLamports: feeEstimateInA,
+        feeEstimateInInputUnits: feeEstimateInA,
       });
 
       await params.logEvent({
@@ -683,7 +685,7 @@ export async function scanPair(params: {
           minProfitA: params.pair.minProfitA,
           minProfitBps: params.pair.minProfitBps,
         }),
-        feeEstimateLamports: feeEstimateInA,
+        feeEstimateInInputUnits: feeEstimateInA,
       });
 
       await params.logEvent({

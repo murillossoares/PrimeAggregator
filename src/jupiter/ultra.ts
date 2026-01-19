@@ -9,13 +9,27 @@ export function makeJupiterUltraClient(baseUrl: string, apiKey: string) {
     inputMint: string;
     outputMint: string;
     amount: string;
-    taker: string;
+    taker?: string;
+    receiver?: string;
+    payer?: string;
+    closeAuthority?: string;
+    referralAccount?: string;
+    referralFee?: number;
+    excludeRouters?: string;
+    excludeDexes?: string;
   }): Promise<UltraOrderResponse> {
     const url = withQuery(`${root}/ultra/v1/order`, {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
       taker: params.taker,
+      receiver: params.receiver,
+      payer: params.payer,
+      closeAuthority: params.closeAuthority,
+      referralAccount: params.referralAccount,
+      referralFee: params.referralFee !== undefined ? String(params.referralFee) : undefined,
+      excludeRouters: params.excludeRouters,
+      excludeDexes: params.excludeDexes,
     });
     return await fetchJson<UltraOrderResponse>(url, { headers, timeoutMs: 15_000 });
   }
@@ -35,4 +49,3 @@ export function makeJupiterUltraClient(baseUrl: string, apiKey: string) {
 
   return { order, execute };
 }
-

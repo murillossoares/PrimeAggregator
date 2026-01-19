@@ -35,9 +35,23 @@ export type SwapInstructionsResponse = {
 };
 
 export type UltraOrderResponse = QuoteResponse & {
+  mode?: string;
+  feeBps?: number;
+  platformFee?: { feeBps?: number; amount?: string } | null;
+  signatureFeeLamports?: number;
+  signatureFeePayer?: string | null;
+  prioritizationFeeLamports?: number;
+  prioritizationFeePayer?: string | null;
+  rentFeeLamports?: number;
+  rentFeePayer?: string | null;
+  swapType?: string;
+  router?: string;
   gasless: boolean;
   requestId: string;
-  taker: string;
+  totalTime?: number;
+  taker: string | null;
+  inUsdValue?: number;
+  outUsdValue?: number;
   transaction: string | null;
 };
 
@@ -45,8 +59,12 @@ export type UltraExecuteResponse = {
   status: string;
   code?: number;
   signature?: string;
-  slot?: number;
+  slot?: number | string;
   error?: string;
+  totalInputAmount?: string;
+  totalOutputAmount?: string;
+  inputAmountResult?: string;
+  outputAmountResult?: string;
 };
 
 export type JupiterClient =
@@ -99,7 +117,14 @@ export type JupiterClient =
         inputMint: string;
         outputMint: string;
         amount: string;
-        taker: string;
+        taker?: string;
+        receiver?: string;
+        payer?: string;
+        closeAuthority?: string;
+        referralAccount?: string;
+        referralFee?: number;
+        excludeRouters?: string;
+        excludeDexes?: string;
       }): Promise<UltraOrderResponse>;
       execute(params: { signedTransaction: string; requestId: string }): Promise<UltraExecuteResponse>;
     };

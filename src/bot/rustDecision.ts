@@ -18,13 +18,13 @@ function decideInTs(params: {
   quote2Out: string;
   quote2MinOut: string;
   minProfit: string;
-  feeEstimateLamports: string;
+  feeEstimateInInputUnits: string;
 }): Decision {
   const amountIn = BigInt(params.amountIn);
   const out = BigInt(params.quote2Out);
   const outMin = BigInt(params.quote2MinOut);
   const minProfit = BigInt(params.minProfit);
-  const feeEstimate = BigInt(params.feeEstimateLamports);
+  const feeEstimate = BigInt(params.feeEstimateInInputUnits);
 
   const profit = out - amountIn - feeEstimate;
   const conservativeProfit = outMin - amountIn - feeEstimate;
@@ -69,7 +69,7 @@ async function decideInRust(params: {
   quote2Out: string;
   quote2MinOut: string;
   minProfit: string;
-  feeEstimateLamports: string;
+  feeEstimateInInputUnits: string;
 }): Promise<Decision> {
   const engine = getRustEngine(params.rustCalcPath);
   const request = JSON.stringify({
@@ -79,7 +79,9 @@ async function decideInRust(params: {
     quote2Out: params.quote2Out,
     quote2MinOut: params.quote2MinOut,
     minProfit: params.minProfit,
-    feeEstimateLamports: params.feeEstimateLamports,
+    feeEstimateInInputUnits: params.feeEstimateInInputUnits,
+    // Backward compatibility with older `arb_calc` binaries.
+    feeEstimateLamports: params.feeEstimateInInputUnits,
   });
   const responseLine = await engine.request(request);
   return JSON.parse(responseLine) as Decision;
@@ -94,7 +96,7 @@ export async function decideWithOptionalRust(params: {
   quote2Out: string;
   quote2MinOut: string;
   minProfit: string;
-  feeEstimateLamports: string;
+  feeEstimateInInputUnits: string;
 }): Promise<Decision> {
   if (!params.useRust) {
     return decideInTs({
@@ -102,7 +104,7 @@ export async function decideWithOptionalRust(params: {
       quote2Out: params.quote2Out,
       quote2MinOut: params.quote2MinOut,
       minProfit: params.minProfit,
-      feeEstimateLamports: params.feeEstimateLamports,
+      feeEstimateInInputUnits: params.feeEstimateInInputUnits,
     });
   }
 
@@ -114,7 +116,7 @@ export async function decideWithOptionalRust(params: {
       quote2Out: params.quote2Out,
       quote2MinOut: params.quote2MinOut,
       minProfit: params.minProfit,
-      feeEstimateLamports: params.feeEstimateLamports,
+      feeEstimateInInputUnits: params.feeEstimateInInputUnits,
     });
   }
 }

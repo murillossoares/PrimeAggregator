@@ -9,7 +9,8 @@ struct Request {
     quote2Out: String,
     quote2MinOut: String,
     minProfit: String,
-    feeEstimateLamports: String,
+    #[serde(alias = "feeEstimateLamports")]
+    feeEstimateInInputUnits: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,7 +75,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let fee_estimate = match parse_i128(&req.feeEstimateLamports) {
+    let fee_estimate = match parse_i128(&req.feeEstimateInInputUnits) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{e}");
