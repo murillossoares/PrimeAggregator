@@ -33,6 +33,7 @@ function formatDecisionLog(params: {
   amountA: string;
   quotes: QuoteResponse[];
   feeEstimateLamports: string;
+  feeEstimateInA?: string;
   profit: string;
   conservativeProfit: string;
   profitable: boolean;
@@ -46,6 +47,7 @@ function formatDecisionLog(params: {
     provider: params.provider,
     amountA: params.amountA,
     feeEstimateLamports: params.feeEstimateLamports,
+    feeEstimateInA: params.feeEstimateInA,
     profit: params.profit,
     conservativeProfit: params.conservativeProfit,
     profitable: params.profitable,
@@ -88,6 +90,24 @@ function formatDecisionLog(params: {
 async function simulateSignedTx(params: { connection: Connection; tx: VersionedTransaction }) {
   const sim = await params.connection.simulateTransaction(params.tx, { commitment: 'processed' });
   return sim.value;
+}
+
+function isUltraExecutionError(exec: { status: string; code?: number; error?: string } | undefined) {
+  if (!exec) return true;
+  if (exec.error && exec.error.trim().length > 0) return true;
+  if (typeof exec.code === 'number' && Number.isFinite(exec.code) && exec.code !== 0) return true;
+  const status = String(exec.status ?? '').toLowerCase();
+  return status.includes('fail') || status.includes('error') || status.includes('revert') || status.includes('reject');
+}
+
+async function confirmIfSignature(params: { connection: Connection; signature?: string }) {
+  const sig = params.signature?.trim();
+  if (!sig) return;
+  try {
+    await params.connection.confirmTransaction(sig, 'confirmed');
+  } catch {
+    // ignore: confirmation can lag or be dropped; caller logs separately where useful
+  }
 }
 
 async function signAndSendV6Swap(params: {
@@ -210,10 +230,16 @@ export async function executeCandidate(params: {
     JSON.stringify(
       formatDecisionLog({
         pair: params.pair,
-        provider: params.best.kind === 'loop_openocean' ? 'openocean' : 'jupiter',
+        provider:
+          params.best.kind === 'loop_openocean'
+            ? 'openocean'
+            : params.jupiter.kind === 'ultra'
+              ? 'ultra'
+              : 'jupiter',
         amountA: params.best.amountA,
         quotes: decisionLogQuotes as QuoteResponse[],
         feeEstimateLamports: params.best.feeEstimateLamports,
+        feeEstimateInA: (params.best as any).feeEstimateInA,
         profit: params.best.decision.profit,
         conservativeProfit: params.best.decision.conservativeProfit,
         profitable: params.best.decision.profitable,
@@ -411,10 +437,57 @@ export async function executeCandidate(params: {
       return { kind: 'built' };
     }
 
+    if (params.livePreflightSimulate) {
+      const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
+      const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'preflight',
+        pair: params.pair.name,
+        ultra: true,
+        sim1Err: sim1.err,
+        sim2Err: sim2.err,
+      });
+      if (sim1.err || sim2.err) {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, preflight: false, sim1Err: sim1.err, sim2Err: sim2.err }));
+        return { kind: 'skipped', reason: 'preflight-failed' };
+      }
+    }
+
     const signed1 = Buffer.from(tx1.serialize()).toString('base64');
     const exec1 = await params.jupiter.execute({ signedTransaction: signed1, requestId: o1.requestId });
+    if (isUltraExecutionError(exec1)) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-exec-failed-leg1',
+        exec1,
+      });
+      console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, exec1 }));
+      return { kind: 'skipped', reason: 'ultra-exec-failed-leg1' };
+    }
+
+    await confirmIfSignature({ connection: params.connection, signature: exec1.signature });
+
     const signed2 = Buffer.from(tx2.serialize()).toString('base64');
     const exec2 = await params.jupiter.execute({ signedTransaction: signed2, requestId: o2.requestId });
+    if (isUltraExecutionError(exec2)) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-exec-failed-leg2',
+        exec1,
+        exec2,
+      });
+      console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, exec1, exec2 }));
+      return { kind: 'skipped', reason: 'ultra-exec-failed-leg2' };
+    }
+
+    await confirmIfSignature({ connection: params.connection, signature: exec2.signature });
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, exec1, exec2 }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, ultra: true, exec1, exec2 });
     return { kind: 'executed' };

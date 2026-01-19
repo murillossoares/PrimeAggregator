@@ -16,6 +16,8 @@ import { LookupTableCache } from './solana/lookupTableCache.js';
 import { PriorityFeeEstimator } from './solana/priorityFees.js';
 import { OpenOceanClient } from './openocean/client.js';
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
 function parseArgs(argv: string[]) {
   const args = new Set(argv.slice(2));
   return {
@@ -98,6 +100,54 @@ async function main() {
       })
     : undefined;
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
+
+  if (env.openOceanEnabled && env.executionStrategy !== 'sequential') {
+    const warning = {
+      ts: new Date().toISOString(),
+      type: 'warning',
+      warning: 'openocean-requires-sequential',
+      executionStrategy: env.executionStrategy,
+    };
+    console.warn(JSON.stringify(warning));
+    await logEvent(warning);
+  }
+
+  if (jupiter.kind === 'ultra' && env.executionStrategy === 'atomic') {
+    const warning = {
+      ts: new Date().toISOString(),
+      type: 'warning',
+      warning: 'ultra-is-sequential',
+      executionStrategy: env.executionStrategy,
+    };
+    console.warn(JSON.stringify(warning));
+    await logEvent(warning);
+  }
+
+  if (jupiter.kind === 'ultra') {
+    const nonSolA = config.pairs.filter((p) => p.aMint !== SOL_MINT);
+    if (nonSolA.length) {
+      const warning = {
+        ts: new Date().toISOString(),
+        type: 'warning',
+        warning: 'ultra-requires-sol-amint',
+        pairs: nonSolA.map((p) => p.name),
+      };
+      console.warn(JSON.stringify(warning));
+      await logEvent(warning);
+    }
+
+    const triangular = config.pairs.filter((p) => Boolean(p.cMint));
+    if (triangular.length) {
+      const warning = {
+        ts: new Date().toISOString(),
+        type: 'warning',
+        warning: 'ultra-does-not-support-triangular',
+        pairs: triangular.map((p) => p.name),
+      };
+      console.warn(JSON.stringify(warning));
+      await logEvent(warning);
+    }
+  }
 
   console.log(
     JSON.stringify(

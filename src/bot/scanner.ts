@@ -14,6 +14,7 @@ export type LoopCandidate = {
   quote2: QuoteResponse | UltraOrderResponse;
   decision: { profitable: boolean; profit: string; conservativeProfit: string };
   feeEstimateLamports: string;
+  feeEstimateInA?: string;
   jitoTipLamports: number;
 };
 
@@ -24,6 +25,7 @@ export type OpenOceanLoopCandidate = {
   quote2: OpenOceanQuote;
   decision: { profitable: boolean; profit: string; conservativeProfit: string };
   feeEstimateLamports: string;
+  feeEstimateInA?: string;
   jitoTipLamports: number;
 };
 
@@ -35,6 +37,7 @@ export type TriangularCandidate = {
   quote3: QuoteResponse;
   decision: { profitable: boolean; profit: string; conservativeProfit: string };
   feeEstimateLamports: string;
+  feeEstimateInA?: string;
   jitoTipLamports: number;
 };
 
@@ -161,13 +164,13 @@ function decidePathInTs(params: {
   finalOut: string;
   finalMinOut: string;
   minProfit: string;
-  feeEstimateLamports: string;
+  feeEstimateInA: string;
 }) {
   const amountIn = BigInt(params.amountIn);
   const out = BigInt(params.finalOut);
   const outMin = BigInt(params.finalMinOut);
   const minProfit = BigInt(params.minProfit);
-  const feeEstimate = BigInt(params.feeEstimateLamports);
+  const feeEstimate = BigInt(params.feeEstimateInA);
 
   const profit = out - amountIn - feeEstimate;
   const conservativeProfit = outMin - amountIn - feeEstimate;
@@ -177,6 +180,49 @@ function decidePathInTs(params: {
     profit: profit.toString(),
     conservativeProfit: conservativeProfit.toString(),
   };
+}
+
+type FeeConversionCacheEntry = { expiresAt: number; value: Promise<string> };
+const feeConversionCache = new Map<string, FeeConversionCacheEntry>();
+
+async function convertFeeLamportsToAAtomic(params: {
+  jupiter: JupiterClient;
+  aMint: string;
+  feeLamports: string;
+  slippageBps: number;
+}): Promise<string> {
+  if (!/^\d+$/.test(params.feeLamports)) return '0';
+  if (params.feeLamports === '0') return '0';
+  if (params.aMint === SOL_MINT) return params.feeLamports;
+
+  // Ultra client does not support quote API (only order/execute), so we can't safely convert units.
+  if (params.jupiter.kind === 'ultra') {
+    throw new Error('fee conversion requires Jupiter quote API (swap-v1/v6); Ultra only supports SOL-based A');
+  }
+
+  const slippageBps = Math.max(1, Math.min(5000, Math.floor(params.slippageBps)));
+  const key = `${params.aMint}:${params.feeLamports}:${slippageBps}:${params.jupiter.kind}`;
+  const now = Date.now();
+  const hit = feeConversionCache.get(key);
+  if (hit && hit.expiresAt > now) return await hit.value;
+
+  const value = params.jupiter
+    .quoteExactIn({
+      inputMint: SOL_MINT,
+      outputMint: params.aMint,
+      amount: params.feeLamports,
+      slippageBps,
+    })
+    // Use outAmount (optimistic execution) as a *conservative cost estimate* (higher A-per-SOL => higher cost).
+    .then((q) => q.outAmount);
+
+  feeConversionCache.set(key, { expiresAt: now + 10_000, value });
+  try {
+    return await value;
+  } catch (e) {
+    feeConversionCache.delete(key);
+    throw e;
+  }
 }
 
 export async function scanPair(params: {
@@ -217,6 +263,26 @@ export async function scanPair(params: {
 
   const includeDexes = params.pair.includeDexes;
   const excludeDexes = params.pair.excludeDexes;
+
+  if (params.pair.aMint !== SOL_MINT && params.jupiter.kind === 'ultra') {
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'skip',
+      pair: params.pair.name,
+      provider: 'ultra',
+      reason: 'ultra-requires-sol-amint',
+      aMint: params.pair.aMint,
+    });
+    return {
+      amountsTried: amounts.length,
+      candidates: [],
+      best: undefined,
+      computeUnitLimit,
+      computeUnitPriceMicroLamports,
+      baseFeeLamports,
+      rentBufferLamports,
+    };
+  }
 
   if (params.pair.cMint) {
     if (params.jupiter.kind === 'ultra') {
@@ -293,6 +359,13 @@ export async function scanPair(params: {
           signaturesPerTx: 1,
         });
 
+        const feeEstimateInA = await convertFeeLamportsToAAtomic({
+          jupiter: params.jupiter,
+          aMint: params.pair.aMint,
+          feeLamports: feeEstimateLamports,
+          slippageBps: params.pair.slippageBps,
+        });
+
         const minProfitA = computeMinProfitA({
           amountA,
           minProfitA: params.pair.minProfitA,
@@ -303,7 +376,7 @@ export async function scanPair(params: {
           finalOut: quote3.outAmount,
           finalMinOut: quote3.otherAmountThreshold,
           minProfit: minProfitA,
-          feeEstimateLamports,
+          feeEstimateInA,
         });
 
         await params.logEvent({
@@ -325,13 +398,24 @@ export async function scanPair(params: {
           outA: quote3.outAmount,
           outAMin: quote3.otherAmountThreshold,
           feeEstimateLamports,
+          feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
           jitoTipLamports,
           profit: decision.profit,
           conservativeProfit: decision.conservativeProfit,
           profitable: decision.profitable,
         });
 
-        candidates.push({ kind: 'triangular', amountA, quote1, quote2, quote3, decision, feeEstimateLamports, jitoTipLamports });
+        candidates.push({
+          kind: 'triangular',
+          amountA,
+          quote1,
+          quote2,
+          quote3,
+          decision,
+          feeEstimateLamports,
+          feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
+          jitoTipLamports,
+        });
       } catch (error) {
         await params.logEvent({
           ts: new Date().toISOString(),
@@ -423,6 +507,13 @@ export async function scanPair(params: {
         signaturesPerTx: 1,
       });
 
+      const feeEstimateInA = await convertFeeLamportsToAAtomic({
+        jupiter: params.jupiter,
+        aMint: params.pair.aMint,
+        feeLamports: feeEstimateLamports,
+        slippageBps: params.pair.slippageBps,
+      });
+
       const decision = await decideWithOptionalRust({
         useRust: params.useRustCalc,
         rustCalcPath: params.rustCalcPath,
@@ -436,7 +527,7 @@ export async function scanPair(params: {
           minProfitA: params.pair.minProfitA,
           minProfitBps: params.pair.minProfitBps,
         }),
-        feeEstimateLamports,
+        feeEstimateLamports: feeEstimateInA,
       });
 
       await params.logEvent({
@@ -451,13 +542,23 @@ export async function scanPair(params: {
         slippageBpsLeg1,
         slippageBpsLeg2,
         feeEstimateLamports,
+        feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
         jitoTipLamports,
         profit: decision.profit,
         conservativeProfit: decision.conservativeProfit,
         profitable: decision.profitable,
       });
 
-      candidates.push({ kind: 'loop', amountA, quote1, quote2, decision, feeEstimateLamports, jitoTipLamports });
+      candidates.push({
+        kind: 'loop',
+        amountA,
+        quote1,
+        quote2,
+        decision,
+        feeEstimateLamports,
+        feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
+        jitoTipLamports,
+      });
     } catch (error) {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -562,6 +663,13 @@ export async function scanPair(params: {
         signaturesPerTx: openOceanSignaturesEstimate,
       });
 
+      const feeEstimateInA = await convertFeeLamportsToAAtomic({
+        jupiter: params.jupiter,
+        aMint: params.pair.aMint,
+        feeLamports: feeEstimateLamports,
+        slippageBps: params.pair.slippageBps,
+      });
+
       const decision = await decideWithOptionalRust({
         useRust: params.useRustCalc,
         rustCalcPath: params.rustCalcPath,
@@ -575,7 +683,7 @@ export async function scanPair(params: {
           minProfitA: params.pair.minProfitA,
           minProfitBps: params.pair.minProfitBps,
         }),
-        feeEstimateLamports,
+        feeEstimateLamports: feeEstimateInA,
       });
 
       await params.logEvent({
@@ -594,6 +702,7 @@ export async function scanPair(params: {
         dexId1: quote1.dexId,
         dexId2: quote2.dexId,
         feeEstimateLamports,
+        feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
         jitoTipLamports,
         profit: decision.profit,
         conservativeProfit: decision.conservativeProfit,
@@ -607,6 +716,7 @@ export async function scanPair(params: {
         quote2,
         decision,
         feeEstimateLamports,
+        feeEstimateInA: params.pair.aMint === SOL_MINT ? undefined : feeEstimateInA,
         jitoTipLamports,
       });
     } catch (error) {

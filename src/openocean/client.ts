@@ -50,6 +50,7 @@ function bpsToPercentString(bps: number): string {
 export class OpenOceanClient {
   private readonly limiter: MinIntervalRateLimiter;
   private bannedUntilMs = 0;
+  private readonly baseUrlValue?: string;
 
   constructor(
     private readonly config: {
@@ -63,11 +64,23 @@ export class OpenOceanClient {
       referrerFee?: string;
     } = {},
   ) {
+    this.baseUrlValue = (() => {
+      const raw = this.config.baseUrl?.trim();
+      if (!raw) return undefined;
+      const withScheme = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`;
+      try {
+        // Validate URL and keep only origin + pathname (strip query/fragment).
+        const u = new URL(withScheme);
+        return `${u.origin}${u.pathname}`.replace(/\/$/, '');
+      } catch {
+        return undefined;
+      }
+    })();
     this.limiter = new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs ?? 1200)));
   }
 
   private get baseUrl() {
-    return this.config.baseUrl ?? 'https://open-api.openocean.finance/v4/solana';
+    return this.baseUrlValue ?? 'https://open-api.openocean.finance/v4/solana';
   }
 
   private get headers(): Record<string, string> | undefined {
