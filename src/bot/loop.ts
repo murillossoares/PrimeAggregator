@@ -15,6 +15,8 @@ type ScanResult = {
   reason?: string;
 };
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
 export type PairScanState = {
   amountCursor: number;
   openOceanTicks: { single: number; observe: number; execute: number };
@@ -23,6 +25,7 @@ export type PairScanState = {
 export async function scanAndMaybeExecute(params: {
   connection: Connection;
   wallet: Keypair;
+  walletBalanceLamports: number;
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
@@ -71,6 +74,10 @@ export async function scanAndMaybeExecute(params: {
   jup429CooldownMs: number;
   openOcean429CooldownMs: number;
   minBalanceLamports: number;
+  dynamicAmountMode?: 'off' | 'sol_balance';
+  dynamicAmountBps?: number;
+  dynamicAmountMinAtomic?: number;
+  dynamicAmountMaxAtomic?: number;
   pair: BotPair;
   useRustCalc: boolean;
   rustCalcPath: string;
@@ -144,7 +151,38 @@ export async function scanAndMaybeExecute(params: {
     return picked;
   })();
 
+  function dynamicAmountOverride(): string[] | undefined {
+    if ((params.dynamicAmountMode ?? 'off') !== 'sol_balance') return undefined;
+    if (params.pair.aMint !== SOL_MINT) return undefined;
+
+    const bps = Math.max(0, Math.floor(params.dynamicAmountBps ?? 0));
+    if (bps <= 0) return undefined;
+
+    const reserve = BigInt(Math.max(0, Math.floor(params.minBalanceLamports)));
+    const balance = BigInt(Math.max(0, Math.floor(params.walletBalanceLamports)));
+    const spendable = balance > reserve ? balance - reserve : 0n;
+    if (spendable <= 0n) return undefined;
+
+    let amount = (spendable * BigInt(bps)) / 10_000n;
+    if (amount <= 0n) return undefined;
+
+    const minAtomic = BigInt(Math.max(0, Math.floor(params.dynamicAmountMinAtomic ?? 0)));
+    const maxAtomic = BigInt(Math.max(0, Math.floor(params.dynamicAmountMaxAtomic ?? 0)));
+    if (minAtomic > 0n && amount < minAtomic) amount = minAtomic;
+    if (maxAtomic > 0n && amount > maxAtomic) amount = maxAtomic;
+
+    if (params.pair.maxNotionalA && /^\d+$/.test(params.pair.maxNotionalA)) {
+      const cap = BigInt(params.pair.maxNotionalA);
+      if (cap > 0n && amount > cap) amount = cap;
+    }
+
+    if (amount <= 0n) return undefined;
+    return [amount.toString()];
+  }
+
   function pickAmountsOverrideForTick(): string[] | undefined {
+    const dynamic = dynamicAmountOverride();
+    if (dynamic?.length) return dynamic;
     if (params.triggerAmountMode === 'all') return undefined;
     if (maxAmountsPerTick <= 0) return undefined;
     if (eligibleAmounts.length === 0) return undefined;

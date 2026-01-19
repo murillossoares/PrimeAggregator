@@ -16,6 +16,9 @@ import { LookupTableCache } from './solana/lookupTableCache.js';
 import { PriorityFeeEstimator } from './solana/priorityFees.js';
 import { OpenOceanClient } from './openocean/client.js';
 import { ProviderCircuitBreaker } from './lib/circuitBreaker.js';
+import { AdaptiveTokenBucketRateLimiter } from './lib/rateLimiter.js';
+import { startHealthServer } from './lib/health.js';
+import { BalanceCache } from './solana/balanceCache.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -85,6 +88,14 @@ async function main() {
     dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
   }
 
+  const jupBaseRps =
+    env.jupRps > 0 ? env.jupRps : 1000 / Math.max(1, env.jupMinIntervalMs);
+  const jupiterLimiter = new AdaptiveTokenBucketRateLimiter({
+    rps: jupBaseRps,
+    burst: env.jupBurst,
+    penaltyMs: env.jupAdaptivePenaltyMs,
+  });
+
   const quoteJupiter = makeJupiterClient({
     swapBaseUrl: env.jupQuoteBaseUrl,
     ultraBaseUrl: env.jupUltraBaseUrl,
@@ -96,6 +107,7 @@ async function main() {
     maxAttempts: env.jupBackoffMaxAttempts,
     baseDelayMs: env.jupBackoffBaseMs,
     maxDelayMs: env.jupBackoffMaxMs,
+    limiter: jupiterLimiter,
   });
   const cachedQuoteJupiter = withJupiterQuoteCache(rateLimitedQuoteJupiter, env.quoteCacheTtlMs);
 
@@ -110,13 +122,23 @@ async function main() {
     maxAttempts: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffMaxAttempts : env.jupBackoffMaxAttempts,
     baseDelayMs: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffBaseMs : env.jupBackoffBaseMs,
     maxDelayMs: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffMaxMs : env.jupBackoffMaxMs,
+    limiter: jupiterLimiter,
   });
+  const openOceanBaseRps =
+    env.openOceanRps > 0 ? env.openOceanRps : 1000 / Math.max(1, env.openOceanMinIntervalMs);
+  const openOceanLimiter = new AdaptiveTokenBucketRateLimiter({
+    rps: openOceanBaseRps,
+    burst: env.openOceanBurst,
+    penaltyMs: env.openOceanAdaptivePenaltyMs,
+  });
+
   const openOcean = env.openOceanEnabled
     ? new OpenOceanClient({
         baseUrl: env.openOceanBaseUrl,
         apiKey: env.openOceanApiKey,
         gasPrice: env.openOceanGasPrice,
         minIntervalMs: env.openOceanMinIntervalMs,
+        limiter: openOceanLimiter,
         enabledDexIds: env.openOceanEnabledDexIds,
         disabledDexIds: env.openOceanDisabledDexIds,
         referrer: env.openOceanReferrer,
@@ -125,6 +147,21 @@ async function main() {
     : undefined;
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
   const providerCircuitBreaker = new ProviderCircuitBreaker();
+  const balanceCache = new BalanceCache();
+
+  startHealthServer({
+    port: env.healthcheckPort,
+    getSnapshot: () => ({
+      ts: new Date().toISOString(),
+      mode: env.mode,
+      botProfile: env.botProfile,
+      pairs: config.pairs.length,
+      jupQuoteKind: cachedQuoteJupiter.kind,
+      jupExecKind: rateLimitedExecJupiter.kind,
+      jupiterLimiter: jupiterLimiter.snapshot(),
+      openOceanLimiter: openOceanLimiter.snapshot(),
+    }),
+  });
 
   if (env.openOceanEnabled && env.executionStrategy !== 'sequential') {
     const warning = {
@@ -269,6 +306,11 @@ async function main() {
   do {
     if (stopRequested) break;
     const now = Date.now();
+    const walletBalanceLamportsLive = await balanceCache.getLamports({
+      connection,
+      pubkey: wallet.publicKey,
+      ttlMs: Math.max(0, Math.floor(env.balanceRefreshMs)),
+    });
     const eligiblePairs = (() => {
       if (args.once) return config.pairs;
 
@@ -312,6 +354,7 @@ async function main() {
         const result = await scanAndMaybeExecute({
           connection,
           wallet,
+          walletBalanceLamports: walletBalanceLamportsLive,
           quoteJupiter: cachedQuoteJupiter,
           execJupiter: rateLimitedExecJupiter,
           openOcean,
@@ -360,6 +403,10 @@ async function main() {
           jup429CooldownMs: env.jup429CooldownMs,
           openOcean429CooldownMs: env.openOcean429CooldownMs,
           minBalanceLamports: env.minBalanceLamports,
+          dynamicAmountMode: env.dynamicAmountMode,
+          dynamicAmountBps: env.dynamicAmountBps,
+          dynamicAmountMinAtomic: env.dynamicAmountMinAtomic,
+          dynamicAmountMaxAtomic: env.dynamicAmountMaxAtomic,
           pair,
           useRustCalc: env.useRustCalc,
           rustCalcPath: env.rustCalcPath,

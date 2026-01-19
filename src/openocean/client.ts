@@ -1,5 +1,5 @@
 import { fetchJson, withQuery } from '../lib/http.js';
-import { MinIntervalRateLimiter } from '../lib/rateLimiter.js';
+import { AdaptiveTokenBucketRateLimiter, MinIntervalRateLimiter } from '../lib/rateLimiter.js';
 import type { OpenOceanApiResponse, OpenOceanQuote, OpenOceanQuoteData, OpenOceanSwapData } from './types.js';
 
 function extractHttpStatus(error: unknown): number | undefined {
@@ -48,7 +48,7 @@ function bpsToPercentString(bps: number): string {
 }
 
 export class OpenOceanClient {
-  private readonly limiter: MinIntervalRateLimiter;
+  private readonly limiter: MinIntervalRateLimiter | AdaptiveTokenBucketRateLimiter;
   private bannedUntilMs = 0;
   private readonly baseUrlValue?: string;
 
@@ -57,6 +57,7 @@ export class OpenOceanClient {
       baseUrl?: string;
       apiKey?: string;
       minIntervalMs?: number;
+      limiter?: MinIntervalRateLimiter | AdaptiveTokenBucketRateLimiter;
       gasPrice?: number;
       enabledDexIds?: string;
       disabledDexIds?: string;
@@ -76,7 +77,7 @@ export class OpenOceanClient {
         return undefined;
       }
     })();
-    this.limiter = new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs ?? 1200)));
+    this.limiter = config.limiter ?? new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs ?? 1200)));
   }
 
   private get baseUrl() {
@@ -102,13 +103,16 @@ export class OpenOceanClient {
   private async call<T>(fn: () => Promise<T>): Promise<T> {
     this.assertNotBanned();
     try {
-      return await this.limiter.schedule(async () => {
+      const res = await this.limiter.schedule(async () => {
         this.assertNotBanned();
         return await fn();
       });
+      if (this.limiter instanceof AdaptiveTokenBucketRateLimiter) this.limiter.noteSuccess();
+      return res;
     } catch (error) {
       const status = extractHttpStatus(error);
       if (status === 429) {
+        if (this.limiter instanceof AdaptiveTokenBucketRateLimiter) this.limiter.note429();
         const banMs = extractOpenOceanBanMs(error);
         const cooldownMs = banMs && banMs > 0 ? banMs : 10_000;
         this.bannedUntilMs = Math.max(this.bannedUntilMs, Date.now() + cooldownMs);

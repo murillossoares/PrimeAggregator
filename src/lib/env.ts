@@ -10,6 +10,7 @@ const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
 const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'vwap', 'bollinger']);
 const TriggerAmountModeSchema = z.enum(['all', 'rotate', 'fixed']);
 const JupiterExecutionProviderSchema = z.enum(['swap', 'ultra']);
+const DynamicAmountModeSchema = z.enum(['off', 'sol_balance']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -107,6 +108,12 @@ export function getEnv() {
   const configPath = process.env.CONFIG_PATH ?? './config.json';
   const pollIntervalMs = parseIntOr(process.env.POLL_INTERVAL_MS, 500);
   const pairSchedulerSpread = parseBoolean(process.env.PAIR_SCHEDULER_SPREAD, true);
+  const healthcheckPort = parseIntOr(process.env.HEALTHCHECK_PORT, 0);
+  const balanceRefreshMs = parseIntOr(process.env.BALANCE_REFRESH_MS, 2000);
+  const dynamicAmountMode = DynamicAmountModeSchema.parse(process.env.DYNAMIC_AMOUNT_A_MODE ?? 'off');
+  const dynamicAmountBps = parseIntOr(process.env.DYNAMIC_AMOUNT_A_BPS, 0);
+  const dynamicAmountMinAtomic = parseIntOr(process.env.DYNAMIC_AMOUNT_A_MIN_ATOMIC, 0);
+  const dynamicAmountMaxAtomic = parseIntOr(process.env.DYNAMIC_AMOUNT_A_MAX_ATOMIC, 0);
 
   const jupSwapBaseUrl = normalizeHttpBaseUrl(process.env.JUP_SWAP_BASE_URL, 'https://api.jup.ag');
   const jupQuoteBaseUrl = normalizeHttpBaseUrl(process.env.JUP_QUOTE_BASE_URL, jupSwapBaseUrl);
@@ -117,6 +124,9 @@ export function getEnv() {
     process.env.JUP_EXECUTION_PROVIDER ?? (jupUseUltra ? 'ultra' : 'swap'),
   );
   const jupMinIntervalMs = parseIntOr(process.env.JUP_MIN_INTERVAL_MS, 150);
+  const jupRps = parseFloatOr(process.env.JUP_RPS, 0);
+  const jupBurst = parseIntOr(process.env.JUP_BURST, 1);
+  const jupAdaptivePenaltyMs = parseIntOr(process.env.JUP_ADAPTIVE_PENALTY_MS, 120_000);
   const jup429CooldownMs = parseIntOr(process.env.JUP_429_COOLDOWN_MS, 30_000);
   const jupBackoffMaxAttempts = parseIntOr(process.env.JUP_BACKOFF_MAX_ATTEMPTS, 4);
   const jupBackoffBaseMs = parseIntOr(process.env.JUP_BACKOFF_BASE_MS, 250);
@@ -132,6 +142,9 @@ export function getEnv() {
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
   const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
   const safeOpenOceanMinIntervalMs = botProfile === 'hft' ? Math.max(600, openOceanMinIntervalMs) : openOceanMinIntervalMs;
+  const openOceanRps = parseFloatOr(process.env.OPENOCEAN_RPS, 0);
+  const openOceanBurst = parseIntOr(process.env.OPENOCEAN_BURST, 2);
+  const openOceanAdaptivePenaltyMs = parseIntOr(process.env.OPENOCEAN_ADAPTIVE_PENALTY_MS, 180_000);
   const openOcean429CooldownMs = parseIntOr(process.env.OPENOCEAN_429_COOLDOWN_MS, 60_000);
   const openOceanSignaturesEstimate = parseIntOr(process.env.OPENOCEAN_SIGNATURES_ESTIMATE, 3);
   const openOceanEnabledDexIds = parseOptionalString(process.env.OPENOCEAN_ENABLED_DEX_IDS);
@@ -211,6 +224,12 @@ export function getEnv() {
     configPath,
     pollIntervalMs,
     pairSchedulerSpread,
+    healthcheckPort,
+    balanceRefreshMs,
+    dynamicAmountMode,
+    dynamicAmountBps,
+    dynamicAmountMinAtomic,
+    dynamicAmountMaxAtomic,
     jupSwapBaseUrl,
     jupQuoteBaseUrl,
     jupUltraBaseUrl,
@@ -218,6 +237,9 @@ export function getEnv() {
     jupUseUltra,
     jupExecutionProvider,
     jupMinIntervalMs,
+    jupRps,
+    jupBurst,
+    jupAdaptivePenaltyMs,
     jup429CooldownMs,
     jupBackoffMaxAttempts,
     jupBackoffBaseMs,
@@ -231,6 +253,9 @@ export function getEnv() {
     openOceanApiKey,
     openOceanGasPrice,
     openOceanMinIntervalMs: safeOpenOceanMinIntervalMs,
+    openOceanRps,
+    openOceanBurst,
+    openOceanAdaptivePenaltyMs,
     openOcean429CooldownMs,
     openOceanSignaturesEstimate,
     openOceanEnabledDexIds,

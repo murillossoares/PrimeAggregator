@@ -1,5 +1,5 @@
 import type { JupiterClient } from './types.js';
-import { MinIntervalRateLimiter } from '../lib/rateLimiter.js';
+import { AdaptiveTokenBucketRateLimiter, MinIntervalRateLimiter } from '../lib/rateLimiter.js';
 
 function extractHttpStatus(error: unknown): number | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -36,9 +36,11 @@ export function withJupiterRateLimit<T extends JupiterClient>(
     maxAttempts: number;
     baseDelayMs: number;
     maxDelayMs: number;
+    limiter?: MinIntervalRateLimiter | AdaptiveTokenBucketRateLimiter;
   },
 ): T {
-  const limiter = new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs)));
+  const limiter =
+    config.limiter ?? new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs)));
   const maxAttempts = Math.max(1, Math.floor(config.maxAttempts));
   const baseDelayMs = Math.max(0, Math.floor(config.baseDelayMs));
   const maxDelayMs = Math.max(baseDelayMs, Math.floor(config.maxDelayMs));
@@ -47,12 +49,17 @@ export function withJupiterRateLimit<T extends JupiterClient>(
     let attempt = 0;
     while (true) {
       try {
-        return await limiter.schedule(fn);
+        const res = await limiter.schedule(fn);
+        if (limiter instanceof AdaptiveTokenBucketRateLimiter) limiter.noteSuccess();
+        return res;
       } catch (error) {
         const retryable = isRetryableError(error);
         const canRetry = retryable && attempt + 1 < maxAttempts;
         if (!canRetry) throw error;
 
+        if (limiter instanceof AdaptiveTokenBucketRateLimiter && extractHttpStatus(error) === 429) {
+          limiter.note429();
+        }
         const waitMs = computeBackoffMs(attempt, baseDelayMs, maxDelayMs);
         limiter.cooldown(waitMs);
         attempt += 1;

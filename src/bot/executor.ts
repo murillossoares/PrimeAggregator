@@ -103,14 +103,50 @@ function isUltraExecutionError(exec: { status: string; code?: number; error?: st
   return status.includes('fail') || status.includes('error') || status.includes('revert') || status.includes('reject');
 }
 
+function summarizeUltraOrderResponse(order: unknown) {
+  const o = order as any;
+  if (!o || typeof o !== 'object') return { kind: typeof order };
+  return {
+    keys: Object.keys(o).slice(0, 40),
+    requestId: o.requestId,
+    inputMint: o.inputMint,
+    outputMint: o.outputMint,
+    inAmount: o.inAmount,
+    outAmount: o.outAmount,
+    otherAmountThreshold: o.otherAmountThreshold,
+    gasless: o.gasless,
+    router: o.router,
+    feeBps: o.feeBps,
+    platformFee: o.platformFee,
+    signatureFeeLamports: o.signatureFeeLamports,
+    prioritizationFeeLamports: o.prioritizationFeeLamports,
+    rentFeeLamports: o.rentFeeLamports,
+    totalTime: o.totalTime,
+    // If the response is not UltraOrderResponse-shaped, still try to surface common error fields.
+    message: o.message,
+    error: o.error,
+    code: o.code,
+    hasTransaction: Boolean(o.transaction),
+  };
+}
+
 async function confirmIfSignature(params: { connection: Connection; signature?: string }) {
   const sig = params.signature?.trim();
   if (!sig) return;
-  try {
-    await params.connection.confirmTransaction(sig, 'confirmed');
-  } catch {
-    // ignore: confirmation can lag or be dropped; caller logs separately where useful
+  const maxAttempts = Math.max(1, Math.floor(Number(process.env.SEQUENTIAL_CONFIRM_MAX_ATTEMPTS ?? 4)));
+  const baseDelayMs = Math.max(50, Math.floor(Number(process.env.SEQUENTIAL_CONFIRM_BASE_DELAY_MS ?? 200)));
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      await params.connection.confirmTransaction(sig, 'processed');
+      return;
+    } catch {
+      const waitMs = baseDelayMs * Math.pow(2, attempt);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
   }
+
+  throw new Error(`Failed to confirm transaction after ${maxAttempts} attempts: ${sig}`);
 }
 
 async function signAndSendV6Swap(params: {
@@ -541,7 +577,17 @@ export async function executeCandidate(params: {
       }
     })();
     if (!o1) return { kind: 'skipped', reason: 'rate-limited' };
-    if (!o1.transaction) throw new Error('Ultra order returned null transaction (leg1)');
+    if (!o1.transaction) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-order-no-transaction-leg1',
+        order: summarizeUltraOrderResponse(o1),
+      });
+      return { kind: 'skipped', reason: 'ultra-order-no-transaction-leg1' };
+    }
 
     const o2: UltraOrderResponse | undefined = await (async () => {
       try {
@@ -562,7 +608,17 @@ export async function executeCandidate(params: {
       }
     })();
     if (!o2) return { kind: 'skipped', reason: 'rate-limited' };
-    if (!o2.transaction) throw new Error('Ultra order returned null transaction (leg2)');
+    if (!o2.transaction) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-order-no-transaction-leg2',
+        order: summarizeUltraOrderResponse(o2),
+      });
+      return { kind: 'skipped', reason: 'ultra-order-no-transaction-leg2' };
+    }
 
     const raw1 = Buffer.from(o1.transaction, 'base64');
     const tx1 = VersionedTransaction.deserialize(raw1);
@@ -635,7 +691,20 @@ export async function executeCandidate(params: {
       return { kind: 'skipped', reason: 'ultra-exec-failed-leg1' };
     }
 
-    await confirmIfSignature({ connection: params.connection, signature: exec1.signature });
+    try {
+      await confirmIfSignature({ connection: params.connection, signature: exec1.signature });
+    } catch (e) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'leg1-not-confirmed',
+        signature: exec1.signature,
+        error: String(e),
+      });
+      return { kind: 'skipped', reason: 'leg1-not-confirmed' };
+    }
 
     const signed2 = Buffer.from(tx2.serialize()).toString('base64');
     const exec2 = await (async () => {
@@ -665,7 +734,17 @@ export async function executeCandidate(params: {
       return { kind: 'skipped', reason: 'ultra-exec-failed-leg2' };
     }
 
-    await confirmIfSignature({ connection: params.connection, signature: exec2.signature });
+    try {
+      await confirmIfSignature({ connection: params.connection, signature: exec2.signature });
+    } catch (e) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'confirm_error',
+        pair: params.pair.name,
+        signature: exec2.signature,
+        error: String(e),
+      });
+    }
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, exec1, exec2 }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, ultra: true, exec1, exec2 });
     return { kind: 'executed' };

@@ -11,6 +11,7 @@ services:
     environment:
       CONFIG_PATH: /app/config.json
       LOG_PATH: /app/logs/events.jupiter.jsonl
+      HEALTHCHECK_PORT: "8080"
       BOT_PROFILE: hft
       LOG_VERBOSE: "false"
       EXECUTION_STRATEGY: atomic
@@ -21,6 +22,18 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const http=require('http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000);",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     stop_grace_period: 30s
     logging:
@@ -41,6 +54,7 @@ services:
     environment:
       CONFIG_PATH: /app/config.json
       LOG_PATH: /app/logs/events.ultra.jsonl
+      HEALTHCHECK_PORT: "8080"
       BOT_PROFILE: hft
       LOG_VERBOSE: "false"
       EXECUTION_STRATEGY: sequential
@@ -51,6 +65,18 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const http=require('http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000);",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     stop_grace_period: 30s
     logging:
@@ -73,6 +99,7 @@ services:
     environment:
       CONFIG_PATH: /app/config.json
       LOG_PATH: /app/logs/events.dual.jsonl
+      HEALTHCHECK_PORT: "8080"
       BOT_PROFILE: hft
       LOG_VERBOSE: "false"
       EXECUTION_STRATEGY: sequential
@@ -84,6 +111,18 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const http=require('http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000);",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     stop_grace_period: 30s
     logging:
@@ -104,6 +143,7 @@ services:
     environment:
       CONFIG_PATH: /app/config.json
       LOG_PATH: /app/logs/events.openocean.jsonl
+      HEALTHCHECK_PORT: "8080"
       BOT_PROFILE: hft
       LOG_VERBOSE: "false"
       EXECUTION_STRATEGY: sequential
@@ -119,6 +159,18 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./logs:/app/logs
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const http=require('http');const req=http.get('http://127.0.0.1:8080/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),2000);",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
     stop_grace_period: 30s
     logging:
