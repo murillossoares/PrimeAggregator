@@ -3,7 +3,11 @@ import type { UltraOrderResponse, UltraExecuteResponse } from './types.js';
 
 export function makeJupiterUltraClient(baseUrl: string, apiKey: string) {
   const headers = { 'x-api-key': apiKey };
-  const root = baseUrl.replace(/\/$/, '');
+  const trimmed = baseUrl.replace(/\/$/, '');
+  // Accept both forms:
+  // - https://api.jup.ag
+  // - https://api.jup.ag/ultra
+  const root = trimmed.endsWith('/ultra') ? trimmed.slice(0, -'/ultra'.length) : trimmed;
 
   async function order(params: {
     inputMint: string;

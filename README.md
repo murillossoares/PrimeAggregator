@@ -80,6 +80,7 @@ O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-onl
   - Copie `.env.production.example` -> `.env.production` e preencha os campos obrigatorios (sem commitar).
   - Use `docker-compose.prod.yml` para rodar 2 servicos em paralelo: `jupiter-atomic` e `openocean-sequential`.
 - Start: `docker compose -f docker-compose.prod.yml up --build -d`
+- Ultra (opcional): `docker compose -f docker-compose.prod.yml --profile ultra up --build -d` (sobe `jupiter-ultra-sequential`)
 - Logs: `docker compose -f docker-compose.prod.yml logs -f --tail=200`
 
 - RPC/WS: use `SOLANA_RPC_URL` privado + `SOLANA_WS_URL` (evite `api.mainnet-beta.solana.com` em `MODE=live`).
@@ -105,6 +106,12 @@ Opcional (apenas `MODE=live`): rodar automaticamente no startup:
 
 - `EXECUTION_STRATEGY=atomic` usa `POST /swap/v1/swap-instructions` e monta uma unica `VersionedTransaction` com 2 pernas.
 - A 2a perna usa `otherAmountThreshold` da 1a (conservador). Se a 1a perna retornar mais, sobra token intermediario na ATA.
+
+## Custos/fees e unidades (importante)
+
+- O bot estima custo em **lamports (SOL)** (`feeEstimateLamports`) mesmo quando o par nao eh em SOL.
+- Para decidir lucro quando `aMint != SOL`, o bot converte esse custo para **unidades de A** usando uma quote `SOL -> aMint` e usa esse valor na decisao (`feeEstimateInA` nos logs).
+- Isso exige que o provider Jupiter tenha endpoint de quote (`swap-v1` ou `v6/Metis`). **Ultra nao oferece quote**, entao Ultra so eh suportado quando `aMint=SOL`.
 
 ## Jito (opcional, MODE=live)
 
@@ -150,7 +157,7 @@ Campos principais em `config.json`:
 - `amountA` (obrigatorio) e `amountASteps` (opcional) para testar varios tamanhos.
 - `slippageBps` (global), `slippageBpsLeg1` / `slippageBpsLeg2` / `slippageBpsLeg3` (opcional, por perna), `cooldownMs`.
 - `minProfitA` (absoluto, em unidades de A) e `minProfitBps` (opcional, % do notional em bps). O bot usa `max(minProfitA, amountA * minProfitBps / 10_000)` como lucro liquido minimo (ja descontando fee/tip estimados).
-- `includeDexes` / `excludeDexes` (opcional) para filtrar venues no quote da Jupiter.
+- `includeDexes` / `excludeDexes` (opcional) para filtrar venues no quote da Jupiter (e `excludeDexes` tambem eh aplicado no Ultra via `excludeDexes` da API).
 - `computeUnitLimit`, `computeUnitPriceMicroLamports` (override por par).
 - `baseFeeLamports`, `rentBufferLamports` (override por par para custo estimado).
 
@@ -165,15 +172,18 @@ Exemplo: `config.triangular.example.json`
 ## Ultra Swap (avaliacao rapida)
 
 - Ultra usa `GET https://api.jup.ag/ultra/v1/order` + `POST https://api.jup.ag/ultra/v1/execute` e exige `x-api-key` (portal `https://portal.jup.ag`).
+- `JUP_ULTRA_BASE_URL` pode ser `https://api.jup.ag` **ou** `https://api.jup.ag/ultra` (o bot normaliza).
 - A API de Swap/Quote usada aqui eh `https://api.jup.ag/swap/v1/*` e tambem exige `x-api-key`.
 - O projeto usa Ultra apenas se `JUP_USE_ULTRA=true` e `JUP_API_KEY` estiver definido.
+- Ultra executa em **2 transacoes** (sequential) para loops `A->B->A`. Recomendado usar `EXECUTION_STRATEGY=sequential` quando `JUP_USE_ULTRA=true`.
+- Ultra **nao suporta triangular** e exige `aMint=SOL` (por causa do custo em lamports).
 
 ## OpenOcean (meta-agregador; opcional)
 
 A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
 
 - Habilite: `OPENOCEAN_ENABLED=true`
-- Base URL (Solana v4): `OPENOCEAN_BASE_URL=https://open-api.openocean.finance/v4/solana`
+- Base URL (Solana v4): `OPENOCEAN_BASE_URL=https://open-api.openocean.finance/v4/solana` (o bot normaliza strings sem `https://`).
 - Rate limit: o bot aplica um intervalo minimo global via `OPENOCEAN_MIN_INTERVAL_MS` (default `1200ms`). A API publica pode responder `HTTP 429` e ate ban temporario (mensagem "banned for one hour"), entao ajuste conforme seu tier.
 - Fee: a OpenOcean costuma retornar swaps com multiplas assinaturas (ex: 3 => `fee ~ 15000` por TX). Ajuste `OPENOCEAN_SIGNATURES_ESTIMATE` (default `3`) para deixar o `feeEstimateLamports` mais realista.
 - Observacao: a OpenOcean entra como **second opinion** e (por padrao) so eh consultada na janela de execucao do trigger. Controles:

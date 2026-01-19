@@ -26,6 +26,40 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # Optional (profile): Jupiter Ultra loop in sequential mode.
+  # Notes:
+  # - Requires `JUP_API_KEY` and `JUP_USE_ULTRA=true` (or set below).
+  # - Ultra requires pairs with `aMint=So111...` (SOL) and does not support triangular.
+  # - Do NOT run multiple services on the same pairs/wallet unless you want duplicate executions.
+  jupiter-ultra-sequential:
+    profiles: ["ultra"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prime-aggregator:local
+    init: true
+    env_file:
+      - .env.production
+    environment:
+      CONFIG_PATH: /app/config.json
+      LOG_PATH: /app/logs/events.ultra.jsonl
+      BOT_PROFILE: hft
+      LOG_VERBOSE: "false"
+      EXECUTION_STRATEGY: sequential
+      JUP_USE_ULTRA: "true"
+      OPENOCEAN_ENABLED: "false"
+      JITO_ENABLED: "false"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   openocean-sequential:
     build:
       context: .
@@ -57,4 +91,3 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-
