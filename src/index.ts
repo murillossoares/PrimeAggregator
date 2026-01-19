@@ -74,19 +74,32 @@ async function main() {
     dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
   }
 
-  const jupiter = makeJupiterClient({
-    swapBaseUrl: env.jupSwapBaseUrl,
+  const quoteJupiter = makeJupiterClient({
+    swapBaseUrl: env.jupQuoteBaseUrl,
     ultraBaseUrl: env.jupUltraBaseUrl,
     apiKey: env.jupApiKey,
-    useUltra: env.jupUseUltra,
+    useUltra: false,
   });
-  const rateLimitedJupiter = withJupiterRateLimit(jupiter, {
+  const rateLimitedQuoteJupiter = withJupiterRateLimit(quoteJupiter, {
     minIntervalMs: env.jupMinIntervalMs,
     maxAttempts: env.jupBackoffMaxAttempts,
     baseDelayMs: env.jupBackoffBaseMs,
     maxDelayMs: env.jupBackoffMaxMs,
   });
-  const cachedJupiter = withJupiterQuoteCache(rateLimitedJupiter, env.quoteCacheTtlMs);
+  const cachedQuoteJupiter = withJupiterQuoteCache(rateLimitedQuoteJupiter, env.quoteCacheTtlMs);
+
+  const execJupiter = makeJupiterClient({
+    swapBaseUrl: env.jupSwapBaseUrl,
+    ultraBaseUrl: env.jupUltraBaseUrl,
+    apiKey: env.jupApiKey,
+    useUltra: env.jupExecutionProvider === 'ultra',
+  });
+  const rateLimitedExecJupiter = withJupiterRateLimit(execJupiter, {
+    minIntervalMs: env.jupExecutionProvider === 'ultra' ? env.jupUltraMinIntervalMs : env.jupMinIntervalMs,
+    maxAttempts: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffMaxAttempts : env.jupBackoffMaxAttempts,
+    baseDelayMs: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffBaseMs : env.jupBackoffBaseMs,
+    maxDelayMs: env.jupExecutionProvider === 'ultra' ? env.jupUltraBackoffMaxMs : env.jupBackoffMaxMs,
+  });
   const openOcean = env.openOceanEnabled
     ? new OpenOceanClient({
         baseUrl: env.openOceanBaseUrl,
@@ -112,7 +125,7 @@ async function main() {
     await logEvent(warning);
   }
 
-  if (jupiter.kind === 'ultra' && env.executionStrategy === 'atomic') {
+  if (rateLimitedExecJupiter.kind === 'ultra' && env.executionStrategy === 'atomic') {
     const warning = {
       ts: new Date().toISOString(),
       type: 'warning',
@@ -123,7 +136,7 @@ async function main() {
     await logEvent(warning);
   }
 
-  if (jupiter.kind === 'ultra') {
+  if (rateLimitedExecJupiter.kind === 'ultra') {
     const nonSolA = config.pairs.filter((p) => p.aMint !== SOL_MINT);
     if (nonSolA.length) {
       const warning = {
@@ -156,7 +169,8 @@ async function main() {
         mode: env.mode,
         botProfile: env.botProfile,
         pairs: config.pairs.length,
-        useUltra: jupiter.kind,
+        jupQuoteKind: cachedQuoteJupiter.kind,
+        jupExecKind: rateLimitedExecJupiter.kind,
         pubkey: wallet.publicKey.toBase58(),
         balanceLamports,
         pairConcurrency: env.pairConcurrency,
@@ -202,6 +216,8 @@ async function main() {
     openOceanJupiterGateBps: env.openOceanJupiterGateBps,
     dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
     jitoEnabled: effectiveJitoEnabled,
+    jupQuoteKind: cachedQuoteJupiter.kind,
+    jupExecKind: rateLimitedExecJupiter.kind,
   });
 
   if (args.setupWallet) {
@@ -243,7 +259,8 @@ async function main() {
         const result = await scanAndMaybeExecute({
           connection,
           wallet,
-          jupiter: cachedJupiter,
+          quoteJupiter: cachedQuoteJupiter,
+          execJupiter: rateLimitedExecJupiter,
           openOcean,
           mode: env.mode,
           executionStrategy: env.executionStrategy,

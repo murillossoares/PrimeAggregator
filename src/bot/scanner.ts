@@ -2,7 +2,7 @@ import type { Connection, Keypair } from '@solana/web3.js';
 
 import type { BotPair } from '../lib/config.js';
 import type { Logger } from '../lib/logger.js';
-import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
+import type { JupiterClient, QuoteResponse } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { OpenOceanQuote } from '../openocean/types.js';
 import { decideWithOptionalRust } from './rustDecision.js';
@@ -10,8 +10,8 @@ import { decideWithOptionalRust } from './rustDecision.js';
 export type LoopCandidate = {
   kind: 'loop';
   amountA: string;
-  quote1: QuoteResponse | UltraOrderResponse;
-  quote2: QuoteResponse | UltraOrderResponse;
+  quote1: QuoteResponse;
+  quote2: QuoteResponse;
   decision: { profitable: boolean; profit: string; conservativeProfit: string };
   feeEstimateLamports: string;
   feeEstimateInA?: string;
@@ -186,7 +186,7 @@ type FeeConversionCacheEntry = { expiresAt: number; value: Promise<string> };
 const feeConversionCache = new Map<string, FeeConversionCacheEntry>();
 
 async function convertFeeLamportsToAAtomic(params: {
-  jupiter: JupiterClient;
+  quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   aMint: string;
   feeLamports: string;
   slippageBps: number;
@@ -195,18 +195,13 @@ async function convertFeeLamportsToAAtomic(params: {
   if (params.feeLamports === '0') return '0';
   if (params.aMint === SOL_MINT) return params.feeLamports;
 
-  // Ultra client does not support quote API (only order/execute), so we can't safely convert units.
-  if (params.jupiter.kind === 'ultra') {
-    throw new Error('fee conversion requires Jupiter quote API (swap-v1/v6); Ultra only supports SOL-based A');
-  }
-
   const slippageBps = Math.max(1, Math.min(5000, Math.floor(params.slippageBps)));
-  const key = `${params.aMint}:${params.feeLamports}:${slippageBps}:${params.jupiter.kind}`;
+  const key = `${params.aMint}:${params.feeLamports}:${slippageBps}:${params.quoteJupiter.kind}`;
   const now = Date.now();
   const hit = feeConversionCache.get(key);
   if (hit && hit.expiresAt > now) return await hit.value;
 
-  const value = params.jupiter
+  const value = params.quoteJupiter
     .quoteExactIn({
       inputMint: SOL_MINT,
       outputMint: params.aMint,
@@ -228,7 +223,7 @@ async function convertFeeLamportsToAAtomic(params: {
 export async function scanPair(params: {
   connection: Connection;
   wallet: Keypair;
-  jupiter: JupiterClient;
+  quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   openOcean?: OpenOceanClient;
   amountsOverride?: string[];
   enableOpenOcean?: boolean;
@@ -264,45 +259,7 @@ export async function scanPair(params: {
   const includeDexes = params.pair.includeDexes;
   const excludeDexes = params.pair.excludeDexes;
 
-  if (params.pair.aMint !== SOL_MINT && params.jupiter.kind === 'ultra') {
-    await params.logEvent({
-      ts: new Date().toISOString(),
-      type: 'skip',
-      pair: params.pair.name,
-      provider: 'ultra',
-      reason: 'ultra-requires-sol-amint',
-      aMint: params.pair.aMint,
-    });
-    return {
-      amountsTried: amounts.length,
-      candidates: [],
-      best: undefined,
-      computeUnitLimit,
-      computeUnitPriceMicroLamports,
-      baseFeeLamports,
-      rentBufferLamports,
-    };
-  }
-
   if (params.pair.cMint) {
-    if (params.jupiter.kind === 'ultra') {
-      await params.logEvent({
-        ts: new Date().toISOString(),
-        type: 'skip',
-        pair: params.pair.name,
-        reason: 'triangular-requires-quote-api',
-      });
-      return {
-        amountsTried: amounts.length,
-        candidates: [],
-        best: undefined,
-        computeUnitLimit,
-        computeUnitPriceMicroLamports,
-        baseFeeLamports,
-        rentBufferLamports,
-      };
-    }
-
     const candidates: Candidate[] = [];
     for (const amountA of amounts) {
       if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
@@ -310,7 +267,7 @@ export async function scanPair(params: {
       }
 
       try {
-        const quote1 = await params.jupiter.quoteExactIn({
+        const quote1 = await params.quoteJupiter.quoteExactIn({
           inputMint: params.pair.aMint,
           outputMint: params.pair.bMint,
           amount: amountA,
@@ -319,7 +276,7 @@ export async function scanPair(params: {
           excludeDexes,
         });
 
-        const quote2 = await params.jupiter.quoteExactIn({
+        const quote2 = await params.quoteJupiter.quoteExactIn({
           inputMint: params.pair.bMint,
           outputMint: params.pair.cMint,
           amount: quote1.otherAmountThreshold,
@@ -328,7 +285,7 @@ export async function scanPair(params: {
           excludeDexes,
         });
 
-        const quote3 = await params.jupiter.quoteExactIn({
+        const quote3 = await params.quoteJupiter.quoteExactIn({
           inputMint: params.pair.cMint,
           outputMint: params.pair.aMint,
           amount: quote2.otherAmountThreshold,
@@ -360,7 +317,7 @@ export async function scanPair(params: {
         });
 
         const feeEstimateInA = await convertFeeLamportsToAAtomic({
-          jupiter: params.jupiter,
+          quoteJupiter: params.quoteJupiter,
           aMint: params.pair.aMint,
           feeLamports: feeEstimateLamports,
           slippageBps: params.pair.slippageBps,
@@ -450,42 +407,24 @@ export async function scanPair(params: {
     }
 
       try {
-        const quote1: QuoteResponse | UltraOrderResponse =
-          params.jupiter.kind === 'ultra'
-            ? await params.jupiter.order({
-                inputMint: params.pair.aMint,
-                outputMint: params.pair.bMint,
-                amount: amountA,
-                taker: params.wallet.publicKey.toBase58(),
-                excludeDexes: excludeDexes?.length ? excludeDexes.join(',') : undefined,
-              })
-            : await params.jupiter.quoteExactIn({
-                inputMint: params.pair.aMint,
-                outputMint: params.pair.bMint,
-                amount: amountA,
-                slippageBps: slippageBpsLeg1,
-                includeDexes,
-                excludeDexes,
-              });
+        const quote1 = await params.quoteJupiter.quoteExactIn({
+          inputMint: params.pair.aMint,
+          outputMint: params.pair.bMint,
+          amount: amountA,
+          slippageBps: slippageBpsLeg1,
+          includeDexes,
+          excludeDexes,
+        });
 
         const quote1OutMin = quote1.otherAmountThreshold;
-        const quote2: QuoteResponse | UltraOrderResponse =
-          params.jupiter.kind === 'ultra'
-            ? await params.jupiter.order({
-                inputMint: params.pair.bMint,
-                outputMint: params.pair.aMint,
-                amount: quote1OutMin,
-                taker: params.wallet.publicKey.toBase58(),
-                excludeDexes: excludeDexes?.length ? excludeDexes.join(',') : undefined,
-              })
-            : await params.jupiter.quoteExactIn({
-                inputMint: params.pair.bMint,
-                outputMint: params.pair.aMint,
-                amount: quote1OutMin,
-                slippageBps: slippageBpsLeg2,
-                includeDexes,
-                excludeDexes,
-              });
+        const quote2 = await params.quoteJupiter.quoteExactIn({
+          inputMint: params.pair.bMint,
+          outputMint: params.pair.aMint,
+          amount: quote1OutMin,
+          slippageBps: slippageBpsLeg2,
+          includeDexes,
+          excludeDexes,
+        });
 
       const jitoTipLamports = computeJitoTipLamports({
         jitoEnabled: params.jitoEnabled,
@@ -505,12 +444,12 @@ export async function scanPair(params: {
         computeUnitLimit,
         computeUnitPriceMicroLamports,
         jitoTipLamports,
-        txCount: params.jupiter.kind === 'ultra' || params.executionStrategy === 'sequential' ? 2 : 1,
+        txCount: params.executionStrategy === 'sequential' ? 2 : 1,
         signaturesPerTx: 1,
       });
 
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
-        jupiter: params.jupiter,
+        quoteJupiter: params.quoteJupiter,
         aMint: params.pair.aMint,
         feeLamports: feeEstimateLamports,
         slippageBps: params.pair.slippageBps,
@@ -666,7 +605,7 @@ export async function scanPair(params: {
       });
 
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
-        jupiter: params.jupiter,
+        quoteJupiter: params.quoteJupiter,
         aMint: params.pair.aMint,
         feeLamports: feeEstimateLamports,
         slippageBps: params.pair.slippageBps,

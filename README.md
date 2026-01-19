@@ -40,7 +40,8 @@ Quando `.env.example` mudar, mantenha seu `.env` atualizado (sem sobrescrever va
 
 Se voce usa o add-on Metis da QuickNode (router privado da Jupiter), a integracao aqui eh so trocar o endpoint:
 
-- `JUP_SWAP_BASE_URL=<METIS_URL>`
+- Para quotes/scan: `JUP_QUOTE_BASE_URL=<METIS_URL>` (recomendado quando `JUP_EXECUTION_PROVIDER=ultra`).
+- Para execucao via swap (nao Ultra): `JUP_SWAP_BASE_URL=<METIS_URL>`
 
 Se seu endpoint nao exigir `x-api-key`, `JUP_API_KEY` pode ficar vazio. O `https://api.jup.ag` exige.
 
@@ -78,9 +79,10 @@ O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-onl
 
 - Arquivos:
   - Copie `.env.production.example` -> `.env.production` e preencha os campos obrigatorios (sem commitar).
-  - Use `docker-compose.prod.yml` para rodar 2 servicos em paralelo: `jupiter-atomic` e `openocean-sequential`.
+  - Use `docker-compose.prod.yml` para rodar 2 servicos em paralelo: `jupiter-atomic` e `openocean-sequential` (ou use os profiles `ultra`/`dual`).
 - Start: `docker compose -f docker-compose.prod.yml up --build -d`
 - Ultra (opcional): `docker compose -f docker-compose.prod.yml --profile ultra up --build -d` (sobe `jupiter-ultra-sequential`)
+- Dual (opcional): `docker compose -f docker-compose.prod.yml --profile dual up --build -d` (sobe `ultra-dual-sequential`)
 - Logs: `docker compose -f docker-compose.prod.yml logs -f --tail=200`
 
 - RPC/WS: use `SOLANA_RPC_URL` privado + `SOLANA_WS_URL` (evite `api.mainnet-beta.solana.com` em `MODE=live`).
@@ -174,8 +176,10 @@ Exemplo: `config.triangular.example.json`
 - Ultra usa `GET https://api.jup.ag/ultra/v1/order` + `POST https://api.jup.ag/ultra/v1/execute` e exige `x-api-key` (portal `https://portal.jup.ag`).
 - `JUP_ULTRA_BASE_URL` pode ser `https://api.jup.ag` **ou** `https://api.jup.ag/ultra` (o bot normaliza).
 - A API de Swap/Quote usada aqui eh `https://api.jup.ag/swap/v1/*` e tambem exige `x-api-key`.
-- O projeto usa Ultra apenas se `JUP_USE_ULTRA=true` e `JUP_API_KEY` estiver definido.
-- Ultra executa em **2 transacoes** (sequential) para loops `A->B->A`. Recomendado usar `EXECUTION_STRATEGY=sequential` quando `JUP_USE_ULTRA=true`.
+- Dual mode: o bot pode **scannear** usando a Quote API (`JUP_QUOTE_BASE_URL`) e **executar** via Ultra (`JUP_EXECUTION_PROVIDER=ultra`) no mesmo processo.
+  - Isso reduz muito `HTTP 429`, porque o Ultra so eh chamado na hora de executar (order/execute), nao a cada tick.
+  - `JUP_USE_ULTRA=true` ainda funciona por compatibilidade, mas prefira `JUP_EXECUTION_PROVIDER=ultra`.
+- Ultra executa em **2 transacoes** (sequential) para loops `A->B->A`. Recomendado usar `EXECUTION_STRATEGY=sequential` quando `JUP_EXECUTION_PROVIDER=ultra`.
 - Ultra **nao suporta triangular** e exige `aMint=SOL` (por causa do custo em lamports).
 
 ## OpenOcean (meta-agregador; opcional)
@@ -195,6 +199,7 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
   - Como validar que Titan foi usado: procure `dexId1=10`/`dexId2=10` nos eventos `type=candidate provider=openocean` (e, em `DRY_RUN_SIMULATE=true`, o log de simulacao costuma mostrar o programa Titan `T1TANpTe...`).
 - Referrer (opcional): `OPENOCEAN_REFERRER` / `OPENOCEAN_REFERRER_FEE` (cuidado: fee reduz sua margem; em arbitragem normalmente deixe vazio).
 - Execucao: atualmente o provider OpenOcean so roda em `EXECUTION_STRATEGY=sequential` (a execucao atomica usa swap-instructions da Jupiter).
+- Dual mode: pode manter `OPENOCEAN_ENABLED=true` junto com `JUP_EXECUTION_PROVIDER=ultra`; nesse caso o bot scanneia via Quote API e, na hora de executar, escolhe o melhor entre OpenOcean e Ultra.
 
 ## Trigger strategy
 

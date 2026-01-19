@@ -9,6 +9,7 @@ const PriorityFeeLevelSchema = z.enum(['min', 'low', 'medium', 'high', 'veryHigh
 const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
 const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'vwap', 'bollinger']);
 const TriggerAmountModeSchema = z.enum(['all', 'rotate', 'fixed']);
+const JupiterExecutionProviderSchema = z.enum(['swap', 'ultra']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -99,13 +100,21 @@ export function getEnv() {
   const pollIntervalMs = parseIntOr(process.env.POLL_INTERVAL_MS, 500);
 
   const jupSwapBaseUrl = process.env.JUP_SWAP_BASE_URL ?? 'https://api.jup.ag';
+  const jupQuoteBaseUrl = process.env.JUP_QUOTE_BASE_URL ?? jupSwapBaseUrl;
   const jupUltraBaseUrl = process.env.JUP_ULTRA_BASE_URL ?? 'https://api.jup.ag';
   const jupApiKey = process.env.JUP_API_KEY;
   const jupUseUltra = parseBoolean(process.env.JUP_USE_ULTRA, false);
+  const jupExecutionProvider = JupiterExecutionProviderSchema.parse(
+    process.env.JUP_EXECUTION_PROVIDER ?? (jupUseUltra ? 'ultra' : 'swap'),
+  );
   const jupMinIntervalMs = parseIntOr(process.env.JUP_MIN_INTERVAL_MS, 150);
   const jupBackoffMaxAttempts = parseIntOr(process.env.JUP_BACKOFF_MAX_ATTEMPTS, 4);
   const jupBackoffBaseMs = parseIntOr(process.env.JUP_BACKOFF_BASE_MS, 250);
   const jupBackoffMaxMs = parseIntOr(process.env.JUP_BACKOFF_MAX_MS, 5000);
+  const jupUltraMinIntervalMs = parseIntOr(process.env.JUP_ULTRA_MIN_INTERVAL_MS, jupMinIntervalMs);
+  const jupUltraBackoffMaxAttempts = parseIntOr(process.env.JUP_ULTRA_BACKOFF_MAX_ATTEMPTS, jupBackoffMaxAttempts);
+  const jupUltraBackoffBaseMs = parseIntOr(process.env.JUP_ULTRA_BACKOFF_BASE_MS, jupBackoffBaseMs);
+  const jupUltraBackoffMaxMs = parseIntOr(process.env.JUP_ULTRA_BACKOFF_MAX_MS, jupBackoffMaxMs);
 
   const openOceanEnabled = parseBoolean(process.env.OPENOCEAN_ENABLED, false);
   const openOceanBaseUrl = process.env.OPENOCEAN_BASE_URL ?? 'https://open-api.openocean.finance/v4/solana';
@@ -189,13 +198,19 @@ export function getEnv() {
     configPath,
     pollIntervalMs,
     jupSwapBaseUrl,
+    jupQuoteBaseUrl,
     jupUltraBaseUrl,
     jupApiKey,
     jupUseUltra,
+    jupExecutionProvider,
     jupMinIntervalMs,
     jupBackoffMaxAttempts,
     jupBackoffBaseMs,
     jupBackoffMaxMs,
+    jupUltraMinIntervalMs,
+    jupUltraBackoffMaxAttempts,
+    jupUltraBackoffBaseMs,
+    jupUltraBackoffMaxMs,
     openOceanEnabled,
     openOceanBaseUrl,
     openOceanApiKey,

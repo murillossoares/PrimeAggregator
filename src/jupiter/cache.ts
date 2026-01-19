@@ -9,7 +9,7 @@ function makeKey(params: { inputMint: string; outputMint: string; amount: string
   return `${params.inputMint}:${params.outputMint}:${params.amount}:${params.slippageBps}`;
 }
 
-export function withJupiterQuoteCache(client: JupiterClient, ttlMs: number): JupiterClient {
+export function withJupiterQuoteCache<T extends JupiterClient>(client: T, ttlMs: number): T {
   if (ttlMs <= 0) return client;
   if (client.kind !== 'swap-v1') return client;
 
@@ -34,5 +34,5 @@ export function withJupiterQuoteCache(client: JupiterClient, ttlMs: number): Jup
         throw e;
       }
     },
-  };
+  } as T;
 }

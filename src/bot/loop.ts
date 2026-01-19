@@ -17,7 +17,8 @@ type ScanResult = {
 export async function scanAndMaybeExecute(params: {
   connection: Connection;
   wallet: Keypair;
-  jupiter: JupiterClient;
+  quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
+  execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
@@ -164,7 +165,7 @@ export async function scanAndMaybeExecute(params: {
     const scan = await scanPair({
       connection: params.connection,
       wallet: params.wallet,
-      jupiter: params.jupiter,
+      quoteJupiter: params.quoteJupiter,
       openOcean: params.openOcean,
       amountsOverride: pickAmountsOverrideForTick(),
       enableOpenOcean,
@@ -278,7 +279,8 @@ export async function scanAndMaybeExecute(params: {
           return await executeCandidate({
             connection: params.connection,
             wallet: params.wallet,
-            jupiter: params.jupiter,
+            quoteJupiter: params.quoteJupiter,
+            execJupiter: params.execJupiter,
             openOcean: params.openOcean,
             mode: params.mode,
             executionStrategy: params.executionStrategy,
@@ -446,7 +448,8 @@ export async function scanAndMaybeExecute(params: {
             return await executeCandidate({
               connection: params.connection,
               wallet: params.wallet,
-              jupiter: params.jupiter,
+              quoteJupiter: params.quoteJupiter,
+              execJupiter: params.execJupiter,
               openOcean: params.openOcean,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
@@ -565,7 +568,8 @@ export async function scanAndMaybeExecute(params: {
             return await executeCandidate({
               connection: params.connection,
               wallet: params.wallet,
-              jupiter: params.jupiter,
+              quoteJupiter: params.quoteJupiter,
+              execJupiter: params.execJupiter,
               openOcean: params.openOcean,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
@@ -676,7 +680,8 @@ export async function scanAndMaybeExecute(params: {
             return await executeCandidate({
               connection: params.connection,
               wallet: params.wallet,
-              jupiter: params.jupiter,
+              quoteJupiter: params.quoteJupiter,
+              execJupiter: params.execJupiter,
               openOcean: params.openOcean,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
@@ -715,7 +720,8 @@ export async function scanAndMaybeExecute(params: {
           return await executeCandidate({
             connection: params.connection,
             wallet: params.wallet,
-            jupiter: params.jupiter,
+            quoteJupiter: params.quoteJupiter,
+            execJupiter: params.execJupiter,
             openOcean: params.openOcean,
             mode: params.mode,
             executionStrategy: params.executionStrategy,
@@ -766,7 +772,8 @@ export async function scanAndMaybeExecute(params: {
   return await executeCandidate({
     connection: params.connection,
     wallet: params.wallet,
-    jupiter: params.jupiter,
+    quoteJupiter: params.quoteJupiter,
+    execJupiter: params.execJupiter,
     openOcean: params.openOcean,
     mode: params.mode,
     executionStrategy: params.executionStrategy,

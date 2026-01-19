@@ -29,15 +29,15 @@ function computeBackoffMs(attempt: number, baseDelayMs: number, maxDelayMs: numb
   return Math.max(0, Math.floor(capped + jitter));
 }
 
-export function withJupiterRateLimit(
-  client: JupiterClient,
+export function withJupiterRateLimit<T extends JupiterClient>(
+  client: T,
   config: {
     minIntervalMs: number;
     maxAttempts: number;
     baseDelayMs: number;
     maxDelayMs: number;
   },
-): JupiterClient {
+): T {
   const limiter = new MinIntervalRateLimiter(Math.max(0, Math.floor(config.minIntervalMs)));
   const maxAttempts = Math.max(1, Math.floor(config.maxAttempts));
   const baseDelayMs = Math.max(0, Math.floor(config.baseDelayMs));
@@ -65,7 +65,7 @@ export function withJupiterRateLimit(
       kind: 'ultra',
       order: (params) => call(() => client.order(params)),
       execute: (params) => call(() => client.execute(params)),
-    };
+    } as T;
   }
 
   return {
@@ -73,5 +73,5 @@ export function withJupiterRateLimit(
     quoteExactIn: (params) => call(() => client.quoteExactIn(params)),
     buildSwapTransaction: (params) => call(() => client.buildSwapTransaction(params)),
     buildSwapInstructions: (params) => call(() => client.buildSwapInstructions(params)),
-  };
+  } as T;
 }

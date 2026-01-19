@@ -16,6 +16,8 @@ type ScanResult = {
   reason?: string;
 };
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
 function parseBooleanEnv(name: string, defaultValue: boolean) {
   const value = process.env[name];
   if (value === undefined) return defaultValue;
@@ -180,7 +182,8 @@ function isLikelyMissingIntermediateFunds(sim: { err: unknown; logs?: string[] |
 export async function executeCandidate(params: {
   connection: Connection;
   wallet: Keypair;
-  jupiter: JupiterClient;
+  quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
+  execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
@@ -230,12 +233,7 @@ export async function executeCandidate(params: {
     JSON.stringify(
       formatDecisionLog({
         pair: params.pair,
-        provider:
-          params.best.kind === 'loop_openocean'
-            ? 'openocean'
-            : params.jupiter.kind === 'ultra'
-              ? 'ultra'
-              : 'jupiter',
+        provider: params.best.kind === 'loop_openocean' ? 'openocean' : params.execJupiter.kind === 'ultra' ? 'ultra' : 'jupiter',
         amountA: params.best.amountA,
         quotes: decisionLogQuotes as QuoteResponse[],
         feeEstimateLamports: params.best.feeEstimateLamports,
@@ -399,16 +397,66 @@ export async function executeCandidate(params: {
     return { kind: 'executed' };
   }
 
-  if (params.jupiter.kind === 'ultra') {
+  if (params.execJupiter.kind === 'ultra') {
+    if (params.executionStrategy !== 'sequential') {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-requires-sequential',
+        executionStrategy: params.executionStrategy,
+      });
+      return { kind: 'skipped', reason: 'ultra-requires-sequential' };
+    }
+
+    if (params.pair.cMint) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-does-not-support-triangular',
+      });
+      return { kind: 'skipped', reason: 'ultra-does-not-support-triangular' };
+    }
+
+    if (params.pair.aMint !== SOL_MINT) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'ultra-requires-sol-amint',
+        aMint: params.pair.aMint,
+      });
+      return { kind: 'skipped', reason: 'ultra-requires-sol-amint' };
+    }
+
     if (params.best.kind !== 'loop') {
       throw new Error('Ultra execution only supports loop candidates');
     }
-    const o1 = params.best.quote1 as UltraOrderResponse;
-    const o2 = params.best.quote2 as UltraOrderResponse;
 
-    if (!o1.transaction || !o2.transaction) {
-      throw new Error('Ultra order returned null transaction');
-    }
+    const taker = params.wallet.publicKey.toBase58();
+    const excludeDexes = params.pair.excludeDexes?.length ? params.pair.excludeDexes.join(',') : undefined;
+
+    const o1: UltraOrderResponse = await params.execJupiter.order({
+      inputMint: params.pair.aMint,
+      outputMint: params.pair.bMint,
+      amount: params.best.amountA,
+      taker,
+      excludeDexes,
+    });
+    if (!o1.transaction) throw new Error('Ultra order returned null transaction (leg1)');
+
+    const o2: UltraOrderResponse = await params.execJupiter.order({
+      inputMint: params.pair.bMint,
+      outputMint: params.pair.aMint,
+      amount: o1.otherAmountThreshold,
+      taker,
+      excludeDexes,
+    });
+    if (!o2.transaction) throw new Error('Ultra order returned null transaction (leg2)');
 
     const raw1 = Buffer.from(o1.transaction, 'base64');
     const tx1 = VersionedTransaction.deserialize(raw1);
@@ -455,7 +503,7 @@ export async function executeCandidate(params: {
     }
 
     const signed1 = Buffer.from(tx1.serialize()).toString('base64');
-    const exec1 = await params.jupiter.execute({ signedTransaction: signed1, requestId: o1.requestId });
+    const exec1 = await params.execJupiter.execute({ signedTransaction: signed1, requestId: o1.requestId });
     if (isUltraExecutionError(exec1)) {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -472,7 +520,7 @@ export async function executeCandidate(params: {
     await confirmIfSignature({ connection: params.connection, signature: exec1.signature });
 
     const signed2 = Buffer.from(tx2.serialize()).toString('base64');
-    const exec2 = await params.jupiter.execute({ signedTransaction: signed2, requestId: o2.requestId });
+    const exec2 = await params.execJupiter.execute({ signedTransaction: signed2, requestId: o2.requestId });
     if (isUltraExecutionError(exec2)) {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -504,9 +552,7 @@ export async function executeCandidate(params: {
   }
 
   const quotes: QuoteResponse[] =
-    params.best.kind === 'triangular'
-      ? [params.best.quote1, params.best.quote2, params.best.quote3]
-      : [params.best.quote1 as QuoteResponse, params.best.quote2 as QuoteResponse];
+    params.best.kind === 'triangular' ? [params.best.quote1, params.best.quote2, params.best.quote3] : [params.best.quote1, params.best.quote2];
 
   if (params.executionStrategy === 'atomic') {
     const wantJito = params.mode === 'live' && params.jitoEnabled;
@@ -517,7 +563,7 @@ export async function executeCandidate(params: {
     const built = await buildAtomicPathTransaction({
       connection: params.connection,
       wallet: params.wallet,
-      jupiter: params.jupiter,
+      jupiter: params.execJupiter,
       legs: quotes,
       computeUnitLimit: params.computeUnitLimit,
       computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
@@ -611,7 +657,7 @@ export async function executeCandidate(params: {
         const rebuilt = await buildAtomicPathTransaction({
           connection: params.connection,
           wallet: params.wallet,
-          jupiter: params.jupiter,
+          jupiter: params.execJupiter,
           legs: quotes,
           computeUnitLimit: params.computeUnitLimit,
           computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
@@ -651,12 +697,12 @@ export async function executeCandidate(params: {
     throw new Error('triangular execution reached sequential path unexpectedly');
   }
 
-  const swap1 = await params.jupiter.buildSwapTransaction({
+  const swap1 = await params.execJupiter.buildSwapTransaction({
     quote: quotes[0],
     userPublicKey: params.wallet.publicKey.toBase58(),
     computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
   });
-  const swap2 = await params.jupiter.buildSwapTransaction({
+  const swap2 = await params.execJupiter.buildSwapTransaction({
     quote: quotes[1],
     userPublicKey: params.wallet.publicKey.toBase58(),
     computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,

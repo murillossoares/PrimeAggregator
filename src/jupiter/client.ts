@@ -15,6 +15,24 @@ export function makeJupiterClient(params: {
   swapBaseUrl: string;
   ultraBaseUrl: string;
   apiKey: string | undefined;
+  useUltra: true;
+}): Extract<JupiterClient, { kind: 'ultra' }>;
+export function makeJupiterClient(params: {
+  swapBaseUrl: string;
+  ultraBaseUrl: string;
+  apiKey: string | undefined;
+  useUltra: false;
+}): Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
+export function makeJupiterClient(params: {
+  swapBaseUrl: string;
+  ultraBaseUrl: string;
+  apiKey: string | undefined;
+  useUltra: boolean;
+}): JupiterClient;
+export function makeJupiterClient(params: {
+  swapBaseUrl: string;
+  ultraBaseUrl: string;
+  apiKey: string | undefined;
   useUltra: boolean;
 }): JupiterClient {
   if (params.useUltra) {
