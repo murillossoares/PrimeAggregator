@@ -7,7 +7,7 @@ import { makeConnection } from './solana/connection.js';
 import { makeJupiterClient } from './jupiter/client.js';
 import { withJupiterQuoteCache } from './jupiter/cache.js';
 import { withJupiterRateLimit } from './jupiter/limit.js';
-import { scanAndMaybeExecute } from './bot/loop.js';
+import { scanAndMaybeExecute, type PairScanState } from './bot/loop.js';
 import { getEnv } from './lib/env.js';
 import { createJsonlLogger, type LogEvent, type Logger } from './lib/logger.js';
 import { setupWalletTokenAccounts } from './solana/setupWallet.js';
@@ -15,8 +15,19 @@ import { forEachLimit } from './lib/concurrency.js';
 import { LookupTableCache } from './solana/lookupTableCache.js';
 import { PriorityFeeEstimator } from './solana/priorityFees.js';
 import { OpenOceanClient } from './openocean/client.js';
+import { ProviderCircuitBreaker } from './lib/circuitBreaker.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+
+function hashString32(value: string) {
+  // FNV-1a 32-bit
+  let h = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
 
 function parseArgs(argv: string[]) {
   const args = new Set(argv.slice(2));
@@ -113,6 +124,7 @@ async function main() {
       })
     : undefined;
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
+  const providerCircuitBreaker = new ProviderCircuitBreaker();
 
   if (env.openOceanEnabled && env.executionStrategy !== 'sequential') {
     const warning = {
@@ -184,6 +196,7 @@ async function main() {
         openOceanExecuteEnabled: env.openOceanExecuteEnabled,
         openOceanEveryNTicks: env.openOceanEveryNTicks,
         openOceanJupiterGateBps: env.openOceanJupiterGateBps,
+        openOceanJupiterNearGateBps: env.openOceanJupiterNearGateBps,
         dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
         jitoEnabled: effectiveJitoEnabled,
         priorityFeeStrategy: env.priorityFeeStrategy,
@@ -214,6 +227,7 @@ async function main() {
     openOceanExecuteEnabled: env.openOceanExecuteEnabled,
     openOceanEveryNTicks: env.openOceanEveryNTicks,
     openOceanJupiterGateBps: env.openOceanJupiterGateBps,
+    openOceanJupiterNearGateBps: env.openOceanJupiterNearGateBps,
     dryRunIncludeJitoTip: env.dryRunIncludeJitoTip,
     jitoEnabled: effectiveJitoEnabled,
     jupQuoteKind: cachedQuoteJupiter.kind,
@@ -239,15 +253,45 @@ async function main() {
   }
 
   const cooldowns = new Map<string, number>();
+  const pairScanStateByName = new Map<string, PairScanState>();
+  const nextScanAtMs = new Map<string, number>();
+  const schedulerSpreadMs = Math.max(1, Math.floor(env.pollIntervalMs));
+  if (!args.once) {
+    const now = Date.now();
+    for (const pair of config.pairs) {
+      const offset = env.pairSchedulerSpread ? hashString32(pair.name) % schedulerSpreadMs : 0;
+      nextScanAtMs.set(pair.name, now + offset);
+    }
+  }
+
   let totalErrors = 0;
   let consecutiveErrors = 0;
   do {
     if (stopRequested) break;
     const now = Date.now();
-    const eligiblePairs = config.pairs.filter((pair) => {
-      const nextAllowedAt = cooldowns.get(pair.name);
-      return !(nextAllowedAt && now < nextAllowedAt);
-    });
+    const eligiblePairs = (() => {
+      if (args.once) return config.pairs;
+
+      return config.pairs.filter((pair) => {
+        const cooldownUntil = cooldowns.get(pair.name) ?? 0;
+        if (now < cooldownUntil) return false;
+        const nextScanAt = nextScanAtMs.get(pair.name) ?? 0;
+        return now >= nextScanAt;
+      });
+    })();
+
+    if (!args.once && eligiblePairs.length === 0) {
+      let nextWakeAt = now + env.pollIntervalMs;
+      for (const pair of config.pairs) {
+        const cooldownUntil = cooldowns.get(pair.name) ?? 0;
+        const nextScanAt = nextScanAtMs.get(pair.name) ?? 0;
+        const nextAt = Math.max(cooldownUntil, nextScanAt);
+        if (nextAt > 0 && nextAt < nextWakeAt) nextWakeAt = nextAt;
+      }
+      const sleepMs = Math.max(5, Math.min(env.pollIntervalMs, nextWakeAt - now));
+      await sleep(sleepMs);
+      continue;
+    }
 
     if (allowPriorityFees && env.computeUnitPriceMicroLamports === 0 && env.priorityFeeStrategy !== 'off') {
       dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
@@ -255,13 +299,24 @@ async function main() {
 
     await forEachLimit(eligiblePairs, env.pairConcurrency, async (pair) => {
       if (stopRequested) return;
+      if (!args.once) nextScanAtMs.set(pair.name, Date.now() + env.pollIntervalMs);
       try {
+        const state =
+          pairScanStateByName.get(pair.name) ??
+          ({
+            amountCursor: 0,
+            openOceanTicks: { single: 0, observe: 0, execute: 0 },
+          } satisfies PairScanState);
+        pairScanStateByName.set(pair.name, state);
+
         const result = await scanAndMaybeExecute({
           connection,
           wallet,
           quoteJupiter: cachedQuoteJupiter,
           execJupiter: rateLimitedExecJupiter,
           openOcean,
+          providerCircuitBreaker,
+          state,
           mode: env.mode,
           executionStrategy: env.executionStrategy,
           triggerStrategy: env.triggerStrategy,
@@ -299,7 +354,11 @@ async function main() {
           openOceanExecuteEnabled: env.openOceanExecuteEnabled,
           openOceanEveryNTicks: env.openOceanEveryNTicks,
           openOceanJupiterGateBps: env.openOceanJupiterGateBps,
+          openOceanJupiterNearGateBps: env.openOceanJupiterNearGateBps,
           openOceanSignaturesEstimate: env.openOceanSignaturesEstimate,
+          feeConversionCacheTtlMs: env.feeConversionCacheTtlMs,
+          jup429CooldownMs: env.jup429CooldownMs,
+          openOcean429CooldownMs: env.openOcean429CooldownMs,
           minBalanceLamports: env.minBalanceLamports,
           pair,
           useRustCalc: env.useRustCalc,
@@ -334,7 +393,6 @@ async function main() {
     });
 
     if (args.once || stopRequested) break;
-    await sleep(env.pollIntervalMs);
   } while (true);
 
   if (stopRequested) {

@@ -6,6 +6,7 @@ import { sleep } from '../lib/time.js';
 import type { JupiterClient } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { LookupTableCache } from '../solana/lookupTableCache.js';
+import type { ProviderCircuitBreaker } from '../lib/circuitBreaker.js';
 import { executeCandidate } from './executor.js';
 import { scanPair } from './scanner.js';
 
@@ -14,12 +15,19 @@ type ScanResult = {
   reason?: string;
 };
 
+export type PairScanState = {
+  amountCursor: number;
+  openOceanTicks: { single: number; observe: number; execute: number };
+};
+
 export async function scanAndMaybeExecute(params: {
   connection: Connection;
   wallet: Keypair;
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
+  providerCircuitBreaker?: ProviderCircuitBreaker;
+  state?: PairScanState;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
   triggerStrategy: 'immediate' | 'avg-window' | 'vwap' | 'bollinger';
@@ -57,7 +65,11 @@ export async function scanAndMaybeExecute(params: {
   openOceanExecuteEnabled: boolean;
   openOceanEveryNTicks: number;
   openOceanJupiterGateBps: number;
+  openOceanJupiterNearGateBps: number;
   openOceanSignaturesEstimate: number;
+  feeConversionCacheTtlMs: number;
+  jup429CooldownMs: number;
+  openOcean429CooldownMs: number;
   minBalanceLamports: number;
   pair: BotPair;
   useRustCalc: boolean;
@@ -109,7 +121,13 @@ export async function scanAndMaybeExecute(params: {
     params.pair.maxNotionalA && /^\d+$/.test(params.pair.maxNotionalA)
       ? configuredAmounts.filter((amount) => BigInt(amount) <= BigInt(params.pair.maxNotionalA as string))
       : configuredAmounts;
-  let amountCursor = 0;
+  const state: PairScanState =
+    params.state ??
+    ({
+      amountCursor: 0,
+      openOceanTicks: { single: 0, observe: 0, execute: 0 },
+    } satisfies PairScanState);
+  let amountCursor = state.amountCursor;
   const preferredAmountIndex =
     /^\d+$/.test(params.pair.amountA) && eligibleAmounts.includes(params.pair.amountA)
       ? eligibleAmounts.indexOf(params.pair.amountA)
@@ -138,11 +156,12 @@ export async function scanAndMaybeExecute(params: {
       picked.push(eligibleAmounts[(amountCursor + i) % eligibleAmounts.length] as string);
     }
     amountCursor = (amountCursor + maxAmountsPerTick) % eligibleAmounts.length;
+    state.amountCursor = amountCursor;
     return picked;
   }
 
   type ScanPhase = 'single' | 'observe' | 'execute';
-  const openOceanTicks: Record<ScanPhase, number> = { single: 0, observe: 0, execute: 0 };
+  const openOceanTicks: Record<ScanPhase, number> = state.openOceanTicks;
   const openOceanEveryNTicks = Math.max(1, Math.floor(params.openOceanEveryNTicks));
 
   function shouldUseOpenOcean(phase: ScanPhase, force: boolean) {
@@ -167,9 +186,13 @@ export async function scanAndMaybeExecute(params: {
       wallet: params.wallet,
       quoteJupiter: params.quoteJupiter,
       openOcean: params.openOcean,
+      providerCircuitBreaker: params.providerCircuitBreaker,
+      jup429CooldownMs: params.jup429CooldownMs,
+      openOcean429CooldownMs: params.openOcean429CooldownMs,
       amountsOverride: pickAmountsOverrideForTick(),
       enableOpenOcean,
       openOceanJupiterGateBps,
+      openOceanJupiterNearGateBps: params.openOceanJupiterNearGateBps,
       openOceanSignaturesEstimate: params.openOceanSignaturesEstimate,
       executionStrategy: params.executionStrategy,
       pair: params.pair,
@@ -178,6 +201,7 @@ export async function scanAndMaybeExecute(params: {
       computeUnitPriceMicroLamports: params.computeUnitPriceMicroLamports,
       baseFeeLamports: params.baseFeeLamports,
       rentBufferLamports: params.rentBufferLamports,
+      feeConversionCacheTtlMs: params.feeConversionCacheTtlMs,
       jitoEnabled: params.jitoEnabled,
       jitoTipLamports: params.jitoTipLamports,
       jitoTipMode: params.jitoTipMode,
@@ -282,6 +306,9 @@ export async function scanAndMaybeExecute(params: {
             quoteJupiter: params.quoteJupiter,
             execJupiter: params.execJupiter,
             openOcean: params.openOcean,
+            providerCircuitBreaker: params.providerCircuitBreaker,
+            jup429CooldownMs: params.jup429CooldownMs,
+            openOcean429CooldownMs: params.openOcean429CooldownMs,
             mode: params.mode,
             executionStrategy: params.executionStrategy,
             dryRunBuild: params.dryRunBuild,
@@ -451,6 +478,9 @@ export async function scanAndMaybeExecute(params: {
               quoteJupiter: params.quoteJupiter,
               execJupiter: params.execJupiter,
               openOcean: params.openOcean,
+              providerCircuitBreaker: params.providerCircuitBreaker,
+              jup429CooldownMs: params.jup429CooldownMs,
+              openOcean429CooldownMs: params.openOcean429CooldownMs,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
               dryRunBuild: params.dryRunBuild,
@@ -571,6 +601,9 @@ export async function scanAndMaybeExecute(params: {
               quoteJupiter: params.quoteJupiter,
               execJupiter: params.execJupiter,
               openOcean: params.openOcean,
+              providerCircuitBreaker: params.providerCircuitBreaker,
+              jup429CooldownMs: params.jup429CooldownMs,
+              openOcean429CooldownMs: params.openOcean429CooldownMs,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
               dryRunBuild: params.dryRunBuild,
@@ -683,6 +716,9 @@ export async function scanAndMaybeExecute(params: {
               quoteJupiter: params.quoteJupiter,
               execJupiter: params.execJupiter,
               openOcean: params.openOcean,
+              providerCircuitBreaker: params.providerCircuitBreaker,
+              jup429CooldownMs: params.jup429CooldownMs,
+              openOcean429CooldownMs: params.openOcean429CooldownMs,
               mode: params.mode,
               executionStrategy: params.executionStrategy,
               dryRunBuild: params.dryRunBuild,
@@ -775,6 +811,9 @@ export async function scanAndMaybeExecute(params: {
     quoteJupiter: params.quoteJupiter,
     execJupiter: params.execJupiter,
     openOcean: params.openOcean,
+    providerCircuitBreaker: params.providerCircuitBreaker,
+    jup429CooldownMs: params.jup429CooldownMs,
+    openOcean429CooldownMs: params.openOcean429CooldownMs,
     mode: params.mode,
     executionStrategy: params.executionStrategy,
     dryRunBuild: params.dryRunBuild,

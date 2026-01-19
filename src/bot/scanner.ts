@@ -2,6 +2,7 @@ import type { Connection, Keypair } from '@solana/web3.js';
 
 import type { BotPair } from '../lib/config.js';
 import type { Logger } from '../lib/logger.js';
+import { isHttp429, type ProviderCircuitBreaker } from '../lib/circuitBreaker.js';
 import type { JupiterClient, QuoteResponse } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { OpenOceanQuote } from '../openocean/types.js';
@@ -185,33 +186,49 @@ function decidePathInTs(params: {
 type FeeConversionCacheEntry = { expiresAt: number; value: Promise<string> };
 const feeConversionCache = new Map<string, FeeConversionCacheEntry>();
 
+function ceilDiv(n: bigint, d: bigint) {
+  if (d <= 0n) throw new Error('ceilDiv requires d>0');
+  if (n <= 0n) return 0n;
+  return (n + d - 1n) / d;
+}
+
 async function convertFeeLamportsToAAtomic(params: {
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
+  pairKey: string;
   aMint: string;
   feeLamports: string;
   slippageBps: number;
+  cacheTtlMs: number;
 }): Promise<string> {
   if (!/^\d+$/.test(params.feeLamports)) return '0';
   if (params.feeLamports === '0') return '0';
   if (params.aMint === SOL_MINT) return params.feeLamports;
 
   const slippageBps = Math.max(1, Math.min(5000, Math.floor(params.slippageBps)));
-  const key = `${params.aMint}:${params.feeLamports}:${slippageBps}:${params.quoteJupiter.kind}`;
+  const cacheTtlMs = Math.max(10_000, Math.floor(params.cacheTtlMs));
+  const key = `${params.pairKey}:${params.aMint}:${slippageBps}:${params.quoteJupiter.kind}`;
   const now = Date.now();
   const hit = feeConversionCache.get(key);
   if (hit && hit.expiresAt > now) return await hit.value;
 
+  // Cache SOL->A conversion as "outAmount for 1 SOL" and convert fee lamports via a ratio.
+  // Use outAmount (optimistic execution) as a conservative cost estimate (higher A-per-SOL => higher cost).
+  const oneSolLamports = 1_000_000_000n;
   const value = params.quoteJupiter
     .quoteExactIn({
       inputMint: SOL_MINT,
       outputMint: params.aMint,
-      amount: params.feeLamports,
+      amount: oneSolLamports.toString(),
       slippageBps,
     })
-    // Use outAmount (optimistic execution) as a *conservative cost estimate* (higher A-per-SOL => higher cost).
-    .then((q) => q.outAmount);
+    .then((q) => {
+      const outPerSol = BigInt(q.outAmount);
+      const feeLamports = BigInt(params.feeLamports);
+      const feeInA = ceilDiv(feeLamports * outPerSol, oneSolLamports);
+      return feeInA.toString();
+    });
 
-  feeConversionCache.set(key, { expiresAt: now + 10_000, value });
+  feeConversionCache.set(key, { expiresAt: now + cacheTtlMs, value });
   try {
     return await value;
   } catch (e) {
@@ -225,9 +242,13 @@ export async function scanPair(params: {
   wallet: Keypair;
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   openOcean?: OpenOceanClient;
+  providerCircuitBreaker?: ProviderCircuitBreaker;
+  jup429CooldownMs?: number;
+  openOcean429CooldownMs?: number;
   amountsOverride?: string[];
   enableOpenOcean?: boolean;
   openOceanJupiterGateBps?: number;
+  openOceanJupiterNearGateBps?: number;
   openOceanSignaturesEstimate?: number;
   executionStrategy: 'atomic' | 'sequential';
   pair: BotPair;
@@ -236,6 +257,7 @@ export async function scanPair(params: {
   computeUnitPriceMicroLamports: number;
   baseFeeLamports: number;
   rentBufferLamports: number;
+  feeConversionCacheTtlMs?: number;
   jitoEnabled: boolean;
   jitoTipLamports: number;
   jitoTipMode: 'fixed' | 'dynamic';
@@ -246,6 +268,12 @@ export async function scanPair(params: {
   rustCalcPath: string;
 }): Promise<ScanSummary> {
   const amounts = parseAmountList(params.pair, params.amountsOverride);
+  const breaker = params.providerCircuitBreaker;
+  const jupiterBreakerKey = `jupiter:${params.pair.name}`;
+  const openOceanBreakerKey = `openocean:${params.pair.name}`;
+  const jup429CooldownMs = Math.max(0, Math.floor(params.jup429CooldownMs ?? 30_000));
+  const openOcean429CooldownMs = Math.max(0, Math.floor(params.openOcean429CooldownMs ?? 60_000));
+
   const computeUnitLimit = params.pair.computeUnitLimit ?? params.computeUnitLimit;
   const computeUnitPriceMicroLamports =
     params.pair.computeUnitPriceMicroLamports ?? params.computeUnitPriceMicroLamports;
@@ -255,9 +283,33 @@ export async function scanPair(params: {
   const slippageBpsLeg1 = params.pair.slippageBpsLeg1 ?? params.pair.slippageBps;
   const slippageBpsLeg2 = params.pair.slippageBpsLeg2 ?? params.pair.slippageBps;
   const slippageBpsLeg3 = params.pair.slippageBpsLeg3 ?? params.pair.slippageBps;
+  const feeConversionCacheTtlMs = Math.max(
+    10_000,
+    Math.floor(Math.max(params.feeConversionCacheTtlMs ?? 60_000, params.pair.cooldownMs ?? 0)),
+  );
 
   const includeDexes = params.pair.includeDexes;
   const excludeDexes = params.pair.excludeDexes;
+
+  if (breaker?.isOpen(jupiterBreakerKey)) {
+    await params.logEvent({
+      ts: new Date().toISOString(),
+      type: 'skip',
+      pair: params.pair.name,
+      provider: 'jupiter',
+      reason: 'rate-limited',
+      cooldownMsRemaining: breaker.remainingMs(jupiterBreakerKey),
+    });
+    return {
+      amountsTried: 0,
+      candidates: [],
+      best: undefined,
+      computeUnitLimit,
+      computeUnitPriceMicroLamports,
+      baseFeeLamports,
+      rentBufferLamports,
+    };
+  }
 
   if (params.pair.cMint) {
     const candidates: Candidate[] = [];
@@ -265,6 +317,7 @@ export async function scanPair(params: {
       if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
         continue;
       }
+      if (breaker?.isOpen(jupiterBreakerKey)) break;
 
       try {
         const quote1 = await params.quoteJupiter.quoteExactIn({
@@ -318,9 +371,11 @@ export async function scanPair(params: {
 
         const feeEstimateInA = await convertFeeLamportsToAAtomic({
           quoteJupiter: params.quoteJupiter,
+          pairKey: params.pair.name,
           aMint: params.pair.aMint,
           feeLamports: feeEstimateLamports,
           slippageBps: params.pair.slippageBps,
+          cacheTtlMs: feeConversionCacheTtlMs,
         });
 
         const minProfitA = computeMinProfitA({
@@ -382,6 +437,11 @@ export async function scanPair(params: {
           amountA,
           error: String(error),
         });
+
+        if (breaker && isHttp429(error)) {
+          breaker.open(jupiterBreakerKey, jup429CooldownMs);
+          break;
+        }
       }
     }
 
@@ -405,6 +465,7 @@ export async function scanPair(params: {
     if (params.pair.maxNotionalA && toBigInt(amountA) > toBigInt(params.pair.maxNotionalA)) {
       continue;
     }
+    if (breaker?.isOpen(jupiterBreakerKey)) break;
 
       try {
         const quote1 = await params.quoteJupiter.quoteExactIn({
@@ -450,9 +511,11 @@ export async function scanPair(params: {
 
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
         quoteJupiter: params.quoteJupiter,
+        pairKey: params.pair.name,
         aMint: params.pair.aMint,
         feeLamports: feeEstimateLamports,
         slippageBps: params.pair.slippageBps,
+        cacheTtlMs: feeConversionCacheTtlMs,
       });
 
       const decision = await decideWithOptionalRust({
@@ -509,10 +572,34 @@ export async function scanPair(params: {
         amountA,
         error: String(error),
       });
+
+      if (breaker && isHttp429(error)) {
+        breaker.open(jupiterBreakerKey, jup429CooldownMs);
+        break;
+      }
     }
   }
 
   if (canUseOpenOcean) {
+    if (breaker?.isOpen(openOceanBreakerKey)) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'openocean_skip',
+        pair: params.pair.name,
+        reason: 'rate-limited',
+        cooldownMsRemaining: breaker.remainingMs(openOceanBreakerKey),
+      });
+      return {
+        amountsTried: amounts.length,
+        candidates,
+        best: pickBestCandidate(candidates),
+        computeUnitLimit,
+        computeUnitPriceMicroLamports,
+        baseFeeLamports,
+        rentBufferLamports,
+      };
+    }
+
     const bestJupiter = pickBestCandidate(candidates);
     if (!bestJupiter) {
       await params.logEvent({
@@ -533,6 +620,7 @@ export async function scanPair(params: {
     }
 
     const gateBps = params.openOceanJupiterGateBps;
+    const nearGateBps = params.openOceanJupiterNearGateBps;
     if (gateBps !== undefined) {
       try {
         const profit = BigInt(bestJupiter.decision.conservativeProfit);
@@ -546,6 +634,34 @@ export async function scanPair(params: {
             reason: 'jupiter_gate',
             jupiterBps: bps,
             gateBps,
+            amountA: bestJupiter.amountA,
+          });
+          return {
+            amountsTried: amounts.length,
+            candidates,
+            best: pickBestCandidate(candidates),
+            computeUnitLimit,
+            computeUnitPriceMicroLamports,
+            baseFeeLamports,
+            rentBufferLamports,
+          };
+        }
+        if (
+          nearGateBps !== undefined &&
+          Number.isFinite(nearGateBps) &&
+          Math.floor(nearGateBps) > 0 &&
+          bps !== undefined &&
+          Number.isFinite(bps) &&
+          bps > gateBps + Math.floor(nearGateBps)
+        ) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'openocean_skip',
+            pair: params.pair.name,
+            reason: 'jupiter_not_near_gate',
+            jupiterBps: bps,
+            gateBps,
+            nearGateBps: Math.floor(nearGateBps),
             amountA: bestJupiter.amountA,
           });
           return {
@@ -606,9 +722,11 @@ export async function scanPair(params: {
 
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
         quoteJupiter: params.quoteJupiter,
+        pairKey: params.pair.name,
         aMint: params.pair.aMint,
         feeLamports: feeEstimateLamports,
         slippageBps: params.pair.slippageBps,
+        cacheTtlMs: feeConversionCacheTtlMs,
       });
 
       const decision = await decideWithOptionalRust({
@@ -669,6 +787,10 @@ export async function scanPair(params: {
         amountA: referenceAmountA,
         error: String(error),
       });
+
+      if (breaker && isHttp429(error)) {
+        breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
+      }
     }
   }
 

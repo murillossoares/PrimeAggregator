@@ -81,6 +81,7 @@ export function getEnv() {
   const computeUnitLimit = parseIntOr(process.env.COMPUTE_UNIT_LIMIT, 1_400_000);
   const computeUnitPriceMicroLamports = parseIntOr(process.env.COMPUTE_UNIT_PRICE_MICRO_LAMPORTS, 0);
   const quoteCacheTtlMs = parseIntOr(process.env.QUOTE_CACHE_TTL_MS, 250);
+  const feeConversionCacheTtlMs = parseIntOr(process.env.FEE_CONVERSION_CACHE_TTL_MS, 60_000);
   const lutCacheTtlMs = parseIntOr(process.env.LUT_CACHE_TTL_MS, 60_000);
   const pairConcurrency = parseIntOr(process.env.PAIR_CONCURRENCY, 2);
   const minBalanceLamports = parseIntOr(process.env.MIN_BALANCE_LAMPORTS, 0);
@@ -105,6 +106,7 @@ export function getEnv() {
 
   const configPath = process.env.CONFIG_PATH ?? './config.json';
   const pollIntervalMs = parseIntOr(process.env.POLL_INTERVAL_MS, 500);
+  const pairSchedulerSpread = parseBoolean(process.env.PAIR_SCHEDULER_SPREAD, true);
 
   const jupSwapBaseUrl = normalizeHttpBaseUrl(process.env.JUP_SWAP_BASE_URL, 'https://api.jup.ag');
   const jupQuoteBaseUrl = normalizeHttpBaseUrl(process.env.JUP_QUOTE_BASE_URL, jupSwapBaseUrl);
@@ -115,6 +117,7 @@ export function getEnv() {
     process.env.JUP_EXECUTION_PROVIDER ?? (jupUseUltra ? 'ultra' : 'swap'),
   );
   const jupMinIntervalMs = parseIntOr(process.env.JUP_MIN_INTERVAL_MS, 150);
+  const jup429CooldownMs = parseIntOr(process.env.JUP_429_COOLDOWN_MS, 30_000);
   const jupBackoffMaxAttempts = parseIntOr(process.env.JUP_BACKOFF_MAX_ATTEMPTS, 4);
   const jupBackoffBaseMs = parseIntOr(process.env.JUP_BACKOFF_BASE_MS, 250);
   const jupBackoffMaxMs = parseIntOr(process.env.JUP_BACKOFF_MAX_MS, 5000);
@@ -129,6 +132,7 @@ export function getEnv() {
   const openOceanGasPrice = parseIntOr(process.env.OPENOCEAN_GAS_PRICE, 5);
   const openOceanMinIntervalMs = parseIntOr(process.env.OPENOCEAN_MIN_INTERVAL_MS, 1200);
   const safeOpenOceanMinIntervalMs = botProfile === 'hft' ? Math.max(600, openOceanMinIntervalMs) : openOceanMinIntervalMs;
+  const openOcean429CooldownMs = parseIntOr(process.env.OPENOCEAN_429_COOLDOWN_MS, 60_000);
   const openOceanSignaturesEstimate = parseIntOr(process.env.OPENOCEAN_SIGNATURES_ESTIMATE, 3);
   const openOceanEnabledDexIds = parseOptionalString(process.env.OPENOCEAN_ENABLED_DEX_IDS);
   const openOceanDisabledDexIds = parseOptionalString(process.env.OPENOCEAN_DISABLED_DEX_IDS);
@@ -140,6 +144,7 @@ export function getEnv() {
   const safeOpenOceanEveryNTicks = botProfile === 'hft' ? Math.max(2, openOceanEveryNTicks) : openOceanEveryNTicks;
   const defaultOpenOceanGateBps = botProfile === 'hft' ? -50 : -250;
   const openOceanJupiterGateBps = parseIntOr(process.env.OPENOCEAN_JUPITER_GATE_BPS, defaultOpenOceanGateBps);
+  const openOceanJupiterNearGateBps = parseIntOr(process.env.OPENOCEAN_JUPITER_NEAR_GATE_BPS, botProfile === 'hft' ? 50 : 0);
 
   const useRustCalc = parseBoolean(process.env.USE_RUST_CALC, false);
   const rustCalcPath = process.env.RUST_CALC_PATH ?? './target/release/arb_calc';
@@ -182,6 +187,7 @@ export function getEnv() {
     computeUnitLimit,
     computeUnitPriceMicroLamports,
     quoteCacheTtlMs,
+    feeConversionCacheTtlMs,
     lutCacheTtlMs,
     pairConcurrency,
     minBalanceLamports,
@@ -204,6 +210,7 @@ export function getEnv() {
     walletSecretKey,
     configPath,
     pollIntervalMs,
+    pairSchedulerSpread,
     jupSwapBaseUrl,
     jupQuoteBaseUrl,
     jupUltraBaseUrl,
@@ -211,6 +218,7 @@ export function getEnv() {
     jupUseUltra,
     jupExecutionProvider,
     jupMinIntervalMs,
+    jup429CooldownMs,
     jupBackoffMaxAttempts,
     jupBackoffBaseMs,
     jupBackoffMaxMs,
@@ -223,6 +231,7 @@ export function getEnv() {
     openOceanApiKey,
     openOceanGasPrice,
     openOceanMinIntervalMs: safeOpenOceanMinIntervalMs,
+    openOcean429CooldownMs,
     openOceanSignaturesEstimate,
     openOceanEnabledDexIds,
     openOceanDisabledDexIds,
@@ -232,6 +241,7 @@ export function getEnv() {
     openOceanExecuteEnabled,
     openOceanEveryNTicks: safeOpenOceanEveryNTicks,
     openOceanJupiterGateBps,
+    openOceanJupiterNearGateBps,
     useRustCalc,
     rustCalcPath,
   };

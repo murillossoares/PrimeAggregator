@@ -6,6 +6,7 @@ import type { Logger } from '../lib/logger.js';
 import type { JupiterClient, QuoteResponse, UltraOrderResponse } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { OpenOceanSwapData } from '../openocean/types.js';
+import { isHttp429, type ProviderCircuitBreaker } from '../lib/circuitBreaker.js';
 import { buildAtomicPathTransaction } from './atomic.js';
 import { getJitoTipAccountAddress, sendBundleViaJito } from './jitoSender.js';
 import type { Candidate } from './scanner.js';
@@ -185,6 +186,9 @@ export async function executeCandidate(params: {
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
+  providerCircuitBreaker?: ProviderCircuitBreaker;
+  jup429CooldownMs?: number;
+  openOcean429CooldownMs?: number;
   mode: 'dry-run' | 'live';
   executionStrategy: 'atomic' | 'sequential';
   dryRunBuild: boolean;
@@ -208,6 +212,12 @@ export async function executeCandidate(params: {
     await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, reason: 'not-profitable' });
     return { kind: 'skipped', reason: 'not-profitable' };
   }
+
+  const breaker = params.providerCircuitBreaker;
+  const jup429CooldownMs = Math.max(0, Math.floor(params.jup429CooldownMs ?? 30_000));
+  const openOcean429CooldownMs = Math.max(0, Math.floor(params.openOcean429CooldownMs ?? 60_000));
+  const openOceanBreakerKey = `openocean:${params.pair.name}`;
+  const ultraBreakerKey = `ultra:${params.pair.name}`;
 
   if (params.mode === 'live' && params.minBalanceLamports > 0) {
     const balance = await params.connection.getBalance(params.wallet.publicKey, 'confirmed');
@@ -246,6 +256,17 @@ export async function executeCandidate(params: {
   );
 
   if (params.best.kind === 'loop_openocean') {
+    if (breaker?.isOpen(openOceanBreakerKey)) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        provider: 'openocean',
+        reason: 'rate-limited',
+        cooldownMsRemaining: breaker.remainingMs(openOceanBreakerKey),
+      });
+      return { kind: 'skipped', reason: 'rate-limited' };
+    }
     if (params.executionStrategy !== 'sequential') {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -260,14 +281,33 @@ export async function executeCandidate(params: {
       throw new Error('OpenOcean candidate selected but OpenOcean client is missing');
     }
 
+    const openOcean = params.openOcean;
     const account = params.wallet.publicKey.toBase58();
-    const swap1 = await params.openOcean.swap({
-      inputMint: params.best.quote1.inputMint,
-      outputMint: params.best.quote1.outputMint,
-      amountAtomic: params.best.amountA,
-      slippageBps: params.best.quote1.slippageBps,
-      account,
-    });
+    const swap1 = await (async () => {
+      try {
+        return await openOcean.swap({
+          inputMint: params.best.quote1.inputMint,
+          outputMint: params.best.quote1.outputMint,
+          amountAtomic: params.best.amountA,
+          slippageBps: params.best.quote1.slippageBps,
+          account,
+        });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'skip',
+            pair: params.pair.name,
+            provider: 'openocean',
+            reason: 'rate-limited',
+          });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!swap1) return { kind: 'skipped', reason: 'rate-limited' };
     const tx1 = deserializeOpenOceanSwapTx(swap1);
     tx1.sign([params.wallet]);
 
@@ -275,13 +315,24 @@ export async function executeCandidate(params: {
       if (params.dryRunSimulate) {
         const sim1 = await simulateSignedTx({ connection: params.connection, tx: tx1 });
 
-        const swap2 = await params.openOcean.swap({
-          inputMint: params.best.quote2.inputMint,
-          outputMint: params.best.quote2.outputMint,
-          amountAtomic: params.best.quote1.otherAmountThreshold,
-          slippageBps: params.best.quote2.slippageBps,
-          account,
-        });
+        const swap2 = await (async () => {
+          try {
+            return await openOcean.swap({
+              inputMint: params.best.quote2.inputMint,
+              outputMint: params.best.quote2.outputMint,
+              amountAtomic: params.best.quote1.otherAmountThreshold,
+              slippageBps: params.best.quote2.slippageBps,
+              account,
+            });
+          } catch (e) {
+            if (breaker && isHttp429(e)) {
+              breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
+              return undefined;
+            }
+            throw e;
+          }
+        })();
+        if (!swap2) return { kind: 'skipped', reason: 'rate-limited' };
         const tx2 = deserializeOpenOceanSwapTx(swap2);
         tx2.sign([params.wallet]);
         const sim2 = await simulateSignedTx({ connection: params.connection, tx: tx2 });
@@ -348,13 +399,32 @@ export async function executeCandidate(params: {
       lastValidBlockHeight: swap1.lastValidBlockHeight ?? latest.lastValidBlockHeight,
     });
 
-    const swap2 = await params.openOcean.swap({
-      inputMint: params.best.quote2.inputMint,
-      outputMint: params.best.quote2.outputMint,
-      amountAtomic: params.best.quote1.otherAmountThreshold,
-      slippageBps: params.best.quote2.slippageBps,
-      account,
-    });
+    const swap2 = await (async () => {
+      try {
+        return await openOcean.swap({
+          inputMint: params.best.quote2.inputMint,
+          outputMint: params.best.quote2.outputMint,
+          amountAtomic: params.best.quote1.otherAmountThreshold,
+          slippageBps: params.best.quote2.slippageBps,
+          account,
+        });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'skip',
+            pair: params.pair.name,
+            provider: 'openocean',
+            reason: 'rate-limited',
+            sig1,
+          });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!swap2) return { kind: 'skipped', reason: 'rate-limited' };
     const tx2 = deserializeOpenOceanSwapTx(swap2);
     tx2.sign([params.wallet]);
 
@@ -398,6 +468,18 @@ export async function executeCandidate(params: {
   }
 
   if (params.execJupiter.kind === 'ultra') {
+    const ultra = params.execJupiter;
+    if (breaker?.isOpen(ultraBreakerKey)) {
+      await params.logEvent({
+        ts: new Date().toISOString(),
+        type: 'skip',
+        pair: params.pair.name,
+        ultra: true,
+        reason: 'rate-limited',
+        cooldownMsRemaining: breaker.remainingMs(ultraBreakerKey),
+      });
+      return { kind: 'skipped', reason: 'rate-limited' };
+    }
     if (params.executionStrategy !== 'sequential') {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -440,22 +522,46 @@ export async function executeCandidate(params: {
     const taker = params.wallet.publicKey.toBase58();
     const excludeDexes = params.pair.excludeDexes?.length ? params.pair.excludeDexes.join(',') : undefined;
 
-    const o1: UltraOrderResponse = await params.execJupiter.order({
-      inputMint: params.pair.aMint,
-      outputMint: params.pair.bMint,
-      amount: params.best.amountA,
-      taker,
-      excludeDexes,
-    });
+    const o1: UltraOrderResponse | undefined = await (async () => {
+      try {
+        return await ultra.order({
+          inputMint: params.pair.aMint,
+          outputMint: params.pair.bMint,
+          amount: params.best.amountA,
+          taker,
+          excludeDexes,
+        });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(ultraBreakerKey, jup429CooldownMs);
+          await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!o1) return { kind: 'skipped', reason: 'rate-limited' };
     if (!o1.transaction) throw new Error('Ultra order returned null transaction (leg1)');
 
-    const o2: UltraOrderResponse = await params.execJupiter.order({
-      inputMint: params.pair.bMint,
-      outputMint: params.pair.aMint,
-      amount: o1.otherAmountThreshold,
-      taker,
-      excludeDexes,
-    });
+    const o2: UltraOrderResponse | undefined = await (async () => {
+      try {
+        return await ultra.order({
+          inputMint: params.pair.bMint,
+          outputMint: params.pair.aMint,
+          amount: o1.otherAmountThreshold,
+          taker,
+          excludeDexes,
+        });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(ultraBreakerKey, jup429CooldownMs);
+          await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!o2) return { kind: 'skipped', reason: 'rate-limited' };
     if (!o2.transaction) throw new Error('Ultra order returned null transaction (leg2)');
 
     const raw1 = Buffer.from(o1.transaction, 'base64');
@@ -503,7 +609,19 @@ export async function executeCandidate(params: {
     }
 
     const signed1 = Buffer.from(tx1.serialize()).toString('base64');
-    const exec1 = await params.execJupiter.execute({ signedTransaction: signed1, requestId: o1.requestId });
+    const exec1 = await (async () => {
+      try {
+        return await ultra.execute({ signedTransaction: signed1, requestId: o1.requestId });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(ultraBreakerKey, jup429CooldownMs);
+          await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!exec1) return { kind: 'skipped', reason: 'rate-limited' };
     if (isUltraExecutionError(exec1)) {
       await params.logEvent({
         ts: new Date().toISOString(),
@@ -520,7 +638,19 @@ export async function executeCandidate(params: {
     await confirmIfSignature({ connection: params.connection, signature: exec1.signature });
 
     const signed2 = Buffer.from(tx2.serialize()).toString('base64');
-    const exec2 = await params.execJupiter.execute({ signedTransaction: signed2, requestId: o2.requestId });
+    const exec2 = await (async () => {
+      try {
+        return await ultra.execute({ signedTransaction: signed2, requestId: o2.requestId });
+      } catch (e) {
+        if (breaker && isHttp429(e)) {
+          breaker.open(ultraBreakerKey, jup429CooldownMs);
+          await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
+          return undefined;
+        }
+        throw e;
+      }
+    })();
+    if (!exec2) return { kind: 'skipped', reason: 'rate-limited' };
     if (isUltraExecutionError(exec2)) {
       await params.logEvent({
         ts: new Date().toISOString(),

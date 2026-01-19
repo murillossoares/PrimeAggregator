@@ -195,6 +195,8 @@ A OpenOcean agrega Jupiter, Titan e outros venues. Integracao opcional:
   - `OPENOCEAN_OBSERVE_ENABLED` / `OPENOCEAN_EXECUTE_ENABLED`
   - `OPENOCEAN_EVERY_N_TICKS` (ex: `2` = consulta a cada 2 ticks)
   - `OPENOCEAN_JUPITER_GATE_BPS` (so consulta se o melhor Jupiter estiver "perto do breakeven", ex `-250` bps = -2.5%)
+  - `OPENOCEAN_JUPITER_NEAR_GATE_BPS` (mais agressivo: so consulta se `gate <= jupiterBps <= gate+near`; `0` desativa)
+  - `OPENOCEAN_429_COOLDOWN_MS` (circuit breaker por par quando tomar `HTTP 429`/ban)
 - Dex filters (opcional): `OPENOCEAN_ENABLED_DEX_IDS` / `OPENOCEAN_DISABLED_DEX_IDS` (veja `https://open-api.openocean.finance/v4/solana/dexList`; no momento `Jupiter=6`, `Titan=10`).
   - Para forcar Titan: `OPENOCEAN_ENABLED_DEX_IDS=10`
   - Como validar que Titan foi usado: procure `dexId1=10`/`dexId2=10` nos eventos `type=candidate provider=openocean` (e, em `DRY_RUN_SIMULATE=true`, o log de simulacao costuma mostrar o programa Titan `T1TANpTe...`).
@@ -232,7 +234,10 @@ Ajustes do modo `bollinger`:
 
 - `PAIR_CONCURRENCY` paraleliza o scan entre pares.
 - `QUOTE_CACHE_TTL_MS` cache curto de quotes (Swap v1).
+- `FEE_CONVERSION_CACHE_TTL_MS` cache de conversao `SOL -> aMint` usado para estimar fees em unidades de A (quando `aMint!=SOL`).
+- `PAIR_SCHEDULER_SPREAD` distribui pares no tempo (evita bursts de HTTP quando voce tem muitos pares).
 - `JUP_MIN_INTERVAL_MS` / `JUP_BACKOFF_*` aplicam rate limit + backoff global para as chamadas Jupiter (reduz `HTTP 429`).
+- `JUP_429_COOLDOWN_MS` ativa um circuit breaker **por par** quando ocorrer `HTTP 429` (reduz storm/retry).
 - `LUT_CACHE_TTL_MS` cache de Address Lookup Tables para acelerar builds atomicos.
 - `MIN_BALANCE_LAMPORTS` evita tentar execucao sem saldo suficiente.
 - `MAX_ERRORS_BEFORE_EXIT` / `MAX_CONSECUTIVE_ERRORS_BEFORE_EXIT` mata o processo se ficar instavel (0 = desativado).
