@@ -10,7 +10,8 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "sync-env": "node scripts/sync-env.mjs"
+    "sync-env": "node scripts/sync-env.mjs",
+    "discover-pairs": "tsx scripts/discoverPairs.ts"
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",

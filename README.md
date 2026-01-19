@@ -28,6 +28,28 @@ Quando `.env.example` mudar, mantenha seu `.env` atualizado (sem sobrescrever va
 
 - `npm.cmd run sync-env`
 
+## Descoberta de pares (Long tail) / config gerado
+
+Gera um `config.generated.json` a partir de uma lista de tokens e filtros (impacto/hops) usando a quote API da Jupiter.
+
+- Rodar com token list da Jupiter (default): `npm.cmd run discover-pairs -- --out ./config.generated.json --maxTokens 30`
+- Rodar com arquivo local: `npm.cmd run discover-pairs -- --tokensFile .\\tokens.txt --out ./config.generated.json`
+
+O script aplica defaults conservadores por par:
+- `maxPriceImpactBps`, `maxRouteHops`, `minNotionalA`, `cooldownOnLossMs`, `maxTradesPerHour`, `maxDailyLossA`, etc.
+
+## Hot reload do config + blacklist
+
+Sem reiniciar o processo/container, o bot pode reler `CONFIG_PATH` periodicamente e aplicar blacklist:
+
+- `CONFIG_RELOAD_MS` (ex: `5000`) habilita o reload.
+- `BLACKLIST_PATH` aponta para um JSON (veja `blacklist.example.json`).
+- `BLACKLIST_MINTS` / `BLACKLIST_PAIRS` (CSV) aplicam blacklist via env.
+
+Eventos:
+- `type:"config_reload"` quando detectar mudança no arquivo de config.
+- `type:"config_reload_error"` em falhas de reload.
+
 ## Helius / QuickNode (alto impacto)
 
 ### RPC privado + WebSocket

@@ -1,0 +1,23 @@
+{
+  "pairs": [
+    {
+      "name": "SOL/<SYMBOL> loop",
+      "aMint": "So11111111111111111111111111111111111111112",
+      "bMint": "<REPLACE_WITH_MINT>",
+      "amountA": "5000000",
+      "amountASteps": ["5000000"],
+      "minNotionalA": "5000000",
+      "slippageBps": 50,
+      "slippageBpsLeg2": 100,
+      "minProfitA": "0",
+      "minProfitBps": 50,
+      "cooldownMs": 1500,
+      "cooldownOnLossMs": 60000,
+      "maxTradesPerHour": 30,
+      "maxDailyLossA": "2000000",
+      "maxNotionalA": "5000000",
+      "maxPriceImpactBps": 150,
+      "maxRouteHops": 4
+    }
+  ]
+}

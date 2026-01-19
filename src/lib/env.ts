@@ -37,6 +37,15 @@ function parseOptionalString(value: string | undefined) {
   return trimmed ? trimmed : undefined;
 }
 
+function parseCsvList(value: string | undefined): string[] {
+  const raw = parseOptionalString(value);
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 function normalizeHttpBaseUrl(value: string | undefined, defaultValue: string) {
   const raw = parseOptionalString(value);
   if (!raw) return defaultValue;
@@ -106,6 +115,10 @@ export function getEnv() {
   const walletSecretKey = z.string().min(1).parse(process.env.WALLET_SECRET_KEY);
 
   const configPath = process.env.CONFIG_PATH ?? './config.json';
+  const configReloadMs = parseIntOr(process.env.CONFIG_RELOAD_MS, 0);
+  const blacklistPath = parseOptionalString(process.env.BLACKLIST_PATH);
+  const blacklistMints = parseCsvList(process.env.BLACKLIST_MINTS);
+  const blacklistPairs = parseCsvList(process.env.BLACKLIST_PAIRS);
   const pollIntervalMs = parseIntOr(process.env.POLL_INTERVAL_MS, 500);
   const pairSchedulerSpread = parseBoolean(process.env.PAIR_SCHEDULER_SPREAD, true);
   const healthcheckPort = parseIntOr(process.env.HEALTHCHECK_PORT, 0);
@@ -223,6 +236,10 @@ export function getEnv() {
     solanaCommitment,
     walletSecretKey,
     configPath,
+    configReloadMs,
+    blacklistPath,
+    blacklistMints,
+    blacklistPairs,
     pollIntervalMs,
     pairSchedulerSpread,
     healthcheckPort,

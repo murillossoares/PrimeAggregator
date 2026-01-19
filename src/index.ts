@@ -21,6 +21,7 @@ import { startHealthServer } from './lib/health.js';
 import { BalanceCache } from './solana/balanceCache.js';
 import { MetricsCollector } from './lib/metrics.js';
 import { TokenBalanceCache } from './solana/tokenBalanceCache.js';
+import { stat, readFile } from 'node:fs/promises';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -55,7 +56,48 @@ async function main() {
   process.once('SIGINT', () => requestStop('SIGINT'));
   process.once('SIGTERM', () => requestStop('SIGTERM'));
 
-  const config = await loadConfig(env.configPath);
+  type Blacklist = { mints: Set<string>; pairs: Set<string> };
+
+  async function loadBlacklist(): Promise<Blacklist> {
+    const mints = new Set<string>((env.blacklistMints ?? []).map((m) => m.trim()).filter(Boolean));
+    const pairs = new Set<string>((env.blacklistPairs ?? []).map((p) => p.trim()).filter(Boolean));
+
+    const path = env.blacklistPath?.trim();
+    if (path) {
+      try {
+        const raw = await readFile(path, 'utf8');
+        const parsed = JSON.parse(raw) as any;
+        const fileMints: unknown = parsed?.mints;
+        const filePairs: unknown = parsed?.pairs;
+        if (Array.isArray(fileMints)) for (const v of fileMints) if (typeof v === 'string' && v.trim()) mints.add(v.trim());
+        if (Array.isArray(filePairs)) for (const v of filePairs) if (typeof v === 'string' && v.trim()) pairs.add(v.trim());
+      } catch {
+        // ignore unreadable/invalid blacklist
+      }
+    }
+
+    return { mints, pairs };
+  }
+
+  function applyBlacklist(config: Awaited<ReturnType<typeof loadConfig>>, blacklist: Blacklist) {
+    if (!blacklist.mints.size && !blacklist.pairs.size) return config;
+    return {
+      ...config,
+      pairs: config.pairs.filter((pair) => {
+        if (blacklist.pairs.has(pair.name)) return false;
+        if (blacklist.mints.has(pair.aMint)) return false;
+        if (blacklist.mints.has(pair.bMint)) return false;
+        if (pair.cMint && blacklist.mints.has(pair.cMint)) return false;
+        return true;
+      }),
+    };
+  }
+
+  let blacklist = await loadBlacklist();
+  let config = applyBlacklist(await loadConfig(env.configPath), blacklist);
+  let configStat: { mtimeMs: number; size: number } | undefined;
+  let lastReloadAtMs = 0;
+  let lastBlacklistReloadAtMs = 0;
   const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
@@ -181,6 +223,8 @@ async function main() {
           openOceanPenalty: o.penaltyMsRemaining > 0,
         };
       })(),
+      blacklist: { mints: blacklist.mints.size, pairs: blacklist.pairs.size, path: env.blacklistPath },
+      configReload: { enabled: env.configReloadMs > 0, ms: env.configReloadMs },
       metrics: metrics.snapshot(),
     }),
   });
@@ -365,6 +409,56 @@ async function main() {
   do {
     if (stopRequested) break;
     const now = Date.now();
+
+    // Hot reload blacklist + config (no restart required)
+    if (env.configReloadMs > 0 && now - lastReloadAtMs >= Math.max(250, Math.floor(env.configReloadMs))) {
+      lastReloadAtMs = now;
+
+      if (env.blacklistPath && now - lastBlacklistReloadAtMs >= Math.max(1000, Math.floor(env.configReloadMs))) {
+        lastBlacklistReloadAtMs = now;
+        const nextBlacklist = await loadBlacklist();
+        blacklist = nextBlacklist;
+      }
+
+      try {
+        const st = await stat(env.configPath);
+        const key = { mtimeMs: st.mtimeMs, size: st.size };
+        const changed = !configStat || configStat.mtimeMs !== key.mtimeMs || configStat.size !== key.size;
+        if (changed) {
+          const next = applyBlacklist(await loadConfig(env.configPath), blacklist);
+          const prevCount = config.pairs.length;
+          config = next;
+          configStat = key;
+
+          // Drop state for removed pairs; init state for new ones
+          const active = new Set(config.pairs.map((p) => p.name));
+          for (const name of Array.from(pairScanStateByName.keys())) if (!active.has(name)) pairScanStateByName.delete(name);
+          for (const name of Array.from(cooldowns.keys())) if (!active.has(name)) cooldowns.delete(name);
+          for (const name of Array.from(nextScanAtMs.keys())) if (!active.has(name)) nextScanAtMs.delete(name);
+
+          if (!args.once) {
+            for (const pair of config.pairs) {
+              if (!nextScanAtMs.has(pair.name)) {
+                const offset = env.pairSchedulerSpread ? hashString32(pair.name) % Math.max(1, Math.floor(env.pollIntervalMs)) : 0;
+                nextScanAtMs.set(pair.name, Date.now() + offset);
+              }
+            }
+          }
+
+          await logEvent({
+            ts: new Date().toISOString(),
+            type: 'config_reload',
+            prevPairs: prevCount,
+            nextPairs: config.pairs.length,
+            blacklistMints: blacklist.mints.size,
+            blacklistPairs: blacklist.pairs.size,
+          });
+        }
+      } catch (e) {
+        await logEvent({ ts: new Date().toISOString(), type: 'config_reload_error', error: String(e) });
+      }
+    }
+
     const walletBalanceLamportsLive = await balanceCache.getLamports({
       connection,
       pubkey: wallet.publicKey,
