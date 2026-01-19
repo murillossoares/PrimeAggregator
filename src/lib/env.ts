@@ -36,6 +36,13 @@ function parseOptionalString(value: string | undefined) {
   return trimmed ? trimmed : undefined;
 }
 
+function normalizeHttpBaseUrl(value: string | undefined, defaultValue: string) {
+  const raw = parseOptionalString(value);
+  if (!raw) return defaultValue;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  return `https://${raw}`;
+}
+
 export function getEnv() {
   const botProfile = BotProfileSchema.parse(process.env.BOT_PROFILE ?? 'default');
   const mode = ModeSchema.parse(process.env.MODE ?? 'dry-run');
@@ -99,9 +106,9 @@ export function getEnv() {
   const configPath = process.env.CONFIG_PATH ?? './config.json';
   const pollIntervalMs = parseIntOr(process.env.POLL_INTERVAL_MS, 500);
 
-  const jupSwapBaseUrl = process.env.JUP_SWAP_BASE_URL ?? 'https://api.jup.ag';
-  const jupQuoteBaseUrl = process.env.JUP_QUOTE_BASE_URL ?? jupSwapBaseUrl;
-  const jupUltraBaseUrl = process.env.JUP_ULTRA_BASE_URL ?? 'https://api.jup.ag';
+  const jupSwapBaseUrl = normalizeHttpBaseUrl(process.env.JUP_SWAP_BASE_URL, 'https://api.jup.ag');
+  const jupQuoteBaseUrl = normalizeHttpBaseUrl(process.env.JUP_QUOTE_BASE_URL, jupSwapBaseUrl);
+  const jupUltraBaseUrl = normalizeHttpBaseUrl(process.env.JUP_ULTRA_BASE_URL, 'https://api.jup.ag');
   const jupApiKey = process.env.JUP_API_KEY;
   const jupUseUltra = parseBoolean(process.env.JUP_USE_ULTRA, false);
   const jupExecutionProvider = JupiterExecutionProviderSchema.parse(

@@ -1,5 +1,6 @@
 services:
   jupiter-atomic:
+    profiles: ["atomic"]
     build:
       context: .
       dockerfile: Dockerfile
@@ -92,6 +93,7 @@ services:
         max-file: "5"
 
   openocean-sequential:
+    profiles: ["titan"]
     build:
       context: .
       dockerfile: Dockerfile

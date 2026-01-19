@@ -79,10 +79,11 @@ O `docker-compose.yml` usa `env_file: .env`, monta `./config.json` como read-onl
 
 - Arquivos:
   - Copie `.env.production.example` -> `.env.production` e preencha os campos obrigatorios (sem commitar).
-  - Use `docker-compose.prod.yml` para rodar 2 servicos em paralelo: `jupiter-atomic` e `openocean-sequential` (ou use os profiles `ultra`/`dual`).
-- Start: `docker compose -f docker-compose.prod.yml up --build -d`
+  - Use `docker-compose.prod.yml` via profiles (nao sobe nada sem `--profile`).
+- Start (atomic/Jito): `docker compose -f docker-compose.prod.yml --profile atomic up --build -d`
 - Ultra (opcional): `docker compose -f docker-compose.prod.yml --profile ultra up --build -d` (sobe `jupiter-ultra-sequential`)
 - Dual (opcional): `docker compose -f docker-compose.prod.yml --profile dual up --build -d` (sobe `ultra-dual-sequential`)
+- Titan/OpenOcean (opcional): `docker compose -f docker-compose.prod.yml --profile titan up --build -d` (sobe `openocean-sequential`)
 - Logs: `docker compose -f docker-compose.prod.yml logs -f --tail=200`
 
 - RPC/WS: use `SOLANA_RPC_URL` privado + `SOLANA_WS_URL` (evite `api.mainnet-beta.solana.com` em `MODE=live`).
