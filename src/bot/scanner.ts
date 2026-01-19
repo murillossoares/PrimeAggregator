@@ -52,6 +52,9 @@ export type ScanSummary = {
   computeUnitPriceMicroLamports: number;
   baseFeeLamports: number;
   rentBufferLamports: number;
+  jupiterQuoteCalls: number;
+  openOceanQuoteCalls: number;
+  feeConversionQuoteCalls: number;
 };
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -274,6 +277,19 @@ export async function scanPair(params: {
   const jup429CooldownMs = Math.max(0, Math.floor(params.jup429CooldownMs ?? 30_000));
   const openOcean429CooldownMs = Math.max(0, Math.floor(params.openOcean429CooldownMs ?? 60_000));
 
+  let jupiterQuoteCalls = 0;
+  let openOceanQuoteCalls = 0;
+  let feeConversionQuoteCalls = 0;
+
+  const jupQuote = async (p: Parameters<typeof params.quoteJupiter.quoteExactIn>[0]) => {
+    jupiterQuoteCalls += 1;
+    return await params.quoteJupiter.quoteExactIn(p);
+  };
+  const ooQuote = async (p: Parameters<OpenOceanClient['quoteExactIn']>[0]) => {
+    openOceanQuoteCalls += 1;
+    return await (params.openOcean as OpenOceanClient).quoteExactIn(p);
+  };
+
   const computeUnitLimit = params.pair.computeUnitLimit ?? params.computeUnitLimit;
   const computeUnitPriceMicroLamports =
     params.pair.computeUnitPriceMicroLamports ?? params.computeUnitPriceMicroLamports;
@@ -308,6 +324,9 @@ export async function scanPair(params: {
       computeUnitPriceMicroLamports,
       baseFeeLamports,
       rentBufferLamports,
+      jupiterQuoteCalls,
+      openOceanQuoteCalls,
+      feeConversionQuoteCalls,
     };
   }
 
@@ -320,7 +339,7 @@ export async function scanPair(params: {
       if (breaker?.isOpen(jupiterBreakerKey)) break;
 
       try {
-        const quote1 = await params.quoteJupiter.quoteExactIn({
+        const quote1 = await jupQuote({
           inputMint: params.pair.aMint,
           outputMint: params.pair.bMint,
           amount: amountA,
@@ -329,7 +348,7 @@ export async function scanPair(params: {
           excludeDexes,
         });
 
-        const quote2 = await params.quoteJupiter.quoteExactIn({
+        const quote2 = await jupQuote({
           inputMint: params.pair.bMint,
           outputMint: params.pair.cMint,
           amount: quote1.otherAmountThreshold,
@@ -338,7 +357,7 @@ export async function scanPair(params: {
           excludeDexes,
         });
 
-        const quote3 = await params.quoteJupiter.quoteExactIn({
+        const quote3 = await jupQuote({
           inputMint: params.pair.cMint,
           outputMint: params.pair.aMint,
           amount: quote2.otherAmountThreshold,
@@ -369,6 +388,7 @@ export async function scanPair(params: {
           signaturesPerTx: 1,
         });
 
+        feeConversionQuoteCalls += 1;
         const feeEstimateInA = await convertFeeLamportsToAAtomic({
           quoteJupiter: params.quoteJupiter,
           pairKey: params.pair.name,
@@ -439,6 +459,14 @@ export async function scanPair(params: {
         });
 
         if (breaker && isHttp429(error)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'jupiter',
+            status: 429,
+            where: 'quote',
+          });
           breaker.open(jupiterBreakerKey, jup429CooldownMs);
           break;
         }
@@ -453,6 +481,9 @@ export async function scanPair(params: {
       computeUnitPriceMicroLamports,
       baseFeeLamports,
       rentBufferLamports,
+      jupiterQuoteCalls,
+      openOceanQuoteCalls,
+      feeConversionQuoteCalls,
     };
   }
 
@@ -468,7 +499,7 @@ export async function scanPair(params: {
     if (breaker?.isOpen(jupiterBreakerKey)) break;
 
       try {
-        const quote1 = await params.quoteJupiter.quoteExactIn({
+        const quote1 = await jupQuote({
           inputMint: params.pair.aMint,
           outputMint: params.pair.bMint,
           amount: amountA,
@@ -478,7 +509,7 @@ export async function scanPair(params: {
         });
 
         const quote1OutMin = quote1.otherAmountThreshold;
-        const quote2 = await params.quoteJupiter.quoteExactIn({
+        const quote2 = await jupQuote({
           inputMint: params.pair.bMint,
           outputMint: params.pair.aMint,
           amount: quote1OutMin,
@@ -509,6 +540,7 @@ export async function scanPair(params: {
         signaturesPerTx: 1,
       });
 
+      feeConversionQuoteCalls += 1;
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
         quoteJupiter: params.quoteJupiter,
         pairKey: params.pair.name,
@@ -574,6 +606,14 @@ export async function scanPair(params: {
       });
 
       if (breaker && isHttp429(error)) {
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'rate_limit',
+          pair: params.pair.name,
+          provider: 'jupiter',
+          status: 429,
+          where: 'quote',
+        });
         breaker.open(jupiterBreakerKey, jup429CooldownMs);
         break;
       }
@@ -597,6 +637,9 @@ export async function scanPair(params: {
         computeUnitPriceMicroLamports,
         baseFeeLamports,
         rentBufferLamports,
+        jupiterQuoteCalls,
+        openOceanQuoteCalls,
+        feeConversionQuoteCalls,
       };
     }
 
@@ -616,6 +659,9 @@ export async function scanPair(params: {
         computeUnitPriceMicroLamports,
         baseFeeLamports,
         rentBufferLamports,
+        jupiterQuoteCalls,
+        openOceanQuoteCalls,
+        feeConversionQuoteCalls,
       };
     }
 
@@ -644,6 +690,9 @@ export async function scanPair(params: {
             computeUnitPriceMicroLamports,
             baseFeeLamports,
             rentBufferLamports,
+            jupiterQuoteCalls,
+            openOceanQuoteCalls,
+            feeConversionQuoteCalls,
           };
         }
         if (
@@ -672,6 +721,9 @@ export async function scanPair(params: {
             computeUnitPriceMicroLamports,
             baseFeeLamports,
             rentBufferLamports,
+            jupiterQuoteCalls,
+            openOceanQuoteCalls,
+            feeConversionQuoteCalls,
           };
         }
       } catch {
@@ -684,14 +736,14 @@ export async function scanPair(params: {
     try {
       const openOcean = params.openOcean as OpenOceanClient;
 
-      const quote1 = await openOcean.quoteExactIn({
+      const quote1 = await ooQuote({
         inputMint: params.pair.aMint,
         outputMint: params.pair.bMint,
         amountAtomic: referenceAmountA,
         slippageBps: slippageBpsLeg1,
       });
 
-      const quote2 = await openOcean.quoteExactIn({
+      const quote2 = await ooQuote({
         inputMint: params.pair.bMint,
         outputMint: params.pair.aMint,
         amountAtomic: quote1.otherAmountThreshold,
@@ -720,6 +772,7 @@ export async function scanPair(params: {
         signaturesPerTx: openOceanSignaturesEstimate,
       });
 
+      feeConversionQuoteCalls += 1;
       const feeEstimateInA = await convertFeeLamportsToAAtomic({
         quoteJupiter: params.quoteJupiter,
         pairKey: params.pair.name,
@@ -789,6 +842,14 @@ export async function scanPair(params: {
       });
 
       if (breaker && isHttp429(error)) {
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'rate_limit',
+          pair: params.pair.name,
+          provider: 'openocean',
+          status: 429,
+          where: 'quote',
+        });
         breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
       }
     }
@@ -802,5 +863,8 @@ export async function scanPair(params: {
     computeUnitPriceMicroLamports,
     baseFeeLamports,
     rentBufferLamports,
+    jupiterQuoteCalls,
+    openOceanQuoteCalls,
+    feeConversionQuoteCalls,
   };
 }

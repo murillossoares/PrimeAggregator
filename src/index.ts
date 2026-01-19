@@ -19,6 +19,8 @@ import { ProviderCircuitBreaker } from './lib/circuitBreaker.js';
 import { AdaptiveTokenBucketRateLimiter } from './lib/rateLimiter.js';
 import { startHealthServer } from './lib/health.js';
 import { BalanceCache } from './solana/balanceCache.js';
+import { MetricsCollector } from './lib/metrics.js';
+import { TokenBalanceCache } from './solana/tokenBalanceCache.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -57,11 +59,14 @@ async function main() {
   const connection = makeConnection({ rpcUrl: env.solanaRpcUrl, wsUrl: env.solanaWsUrl, commitment: env.solanaCommitment });
   const wallet = loadWallet(env.walletSecretKey);
   const balanceLamports = await connection.getBalance(wallet.publicKey, 'confirmed');
+  let walletBalanceLamportsSnapshot = balanceLamports;
+  let autoTuneSnapshot: Record<string, unknown> = {};
+  const metrics = new MetricsCollector();
   const baseLogEvent = createJsonlLogger(env.logPath, {
     rotateMaxBytes: env.logRotateMaxBytes,
     rotateMaxFiles: env.logRotateMaxFiles,
   });
-  const logEvent: Logger = env.logVerbose
+  const writeLogEvent: Logger = env.logVerbose
     ? baseLogEvent
     : async (event: LogEvent) => {
         const type = typeof event['type'] === 'string' ? (event['type'] as string) : undefined;
@@ -69,6 +74,10 @@ async function main() {
         if (type === 'candidate' && event['profitable'] !== true) return;
         await baseLogEvent(event);
       };
+  const logEvent: Logger = async (event: LogEvent) => {
+    metrics.observe(event);
+    await writeLogEvent(event);
+  };
 
   const effectiveJitoEnabled = env.jitoEnabled && (env.mode === 'live' || env.dryRunIncludeJitoTip);
   const effectiveJitoTipLamports = effectiveJitoEnabled ? env.jitoTipLamports : 0;
@@ -148,6 +157,7 @@ async function main() {
   const lookupTableCache = new LookupTableCache(env.lutCacheTtlMs);
   const providerCircuitBreaker = new ProviderCircuitBreaker();
   const balanceCache = new BalanceCache();
+  const tokenBalanceCache = new TokenBalanceCache();
 
   startHealthServer({
     port: env.healthcheckPort,
@@ -158,8 +168,20 @@ async function main() {
       pairs: config.pairs.length,
       jupQuoteKind: cachedQuoteJupiter.kind,
       jupExecKind: rateLimitedExecJupiter.kind,
+      walletBalanceLamports: walletBalanceLamportsSnapshot,
       jupiterLimiter: jupiterLimiter.snapshot(),
       openOceanLimiter: openOceanLimiter.snapshot(),
+      autoTune: autoTuneSnapshot,
+      alerts: (() => {
+        const j = jupiterLimiter.snapshot();
+        const o = openOceanLimiter.snapshot();
+        return {
+          lowBalance: env.minBalanceLamports > 0 ? walletBalanceLamportsSnapshot < env.minBalanceLamports : false,
+          jupiterPenalty: j.penaltyMsRemaining > 0,
+          openOceanPenalty: o.penaltyMsRemaining > 0,
+        };
+      })(),
+      metrics: metrics.snapshot(),
     }),
   });
 
@@ -292,6 +314,43 @@ async function main() {
   const cooldowns = new Map<string, number>();
   const pairScanStateByName = new Map<string, PairScanState>();
   const nextScanAtMs = new Map<string, number>();
+
+  type PairRiskState = {
+    hourTradesMs: number[];
+    dayKey: string;
+    dailyLossAAtomic: bigint;
+  };
+  const pairRiskByName = new Map<string, PairRiskState>();
+
+  function utcDayKey(tsMs: number) {
+    return new Date(tsMs).toISOString().slice(0, 10);
+  }
+
+  function nextUtcMidnightMs(tsMs: number) {
+    const d = new Date(tsMs);
+    d.setUTCHours(24, 0, 0, 0);
+    return d.getTime();
+  }
+
+  function upsertRiskState(pairName: string, nowMs: number) {
+    const existing = pairRiskByName.get(pairName);
+    const dayKey = utcDayKey(nowMs);
+    if (!existing) {
+      const created: PairRiskState = { hourTradesMs: [], dayKey, dailyLossAAtomic: 0n };
+      pairRiskByName.set(pairName, created);
+      return created;
+    }
+    if (existing.dayKey !== dayKey) {
+      existing.dayKey = dayKey;
+      existing.dailyLossAAtomic = 0n;
+    }
+    return existing;
+  }
+
+  function setCooldownMs(pairName: string, untilMs: number) {
+    const current = cooldowns.get(pairName) ?? 0;
+    cooldowns.set(pairName, Math.max(current, untilMs));
+  }
   const schedulerSpreadMs = Math.max(1, Math.floor(env.pollIntervalMs));
   if (!args.once) {
     const now = Date.now();
@@ -311,6 +370,7 @@ async function main() {
       pubkey: wallet.publicKey,
       ttlMs: Math.max(0, Math.floor(env.balanceRefreshMs)),
     });
+    walletBalanceLamportsSnapshot = walletBalanceLamportsLive;
     const eligiblePairs = (() => {
       if (args.once) return config.pairs;
 
@@ -339,10 +399,78 @@ async function main() {
       dynamicComputeUnitPriceMicroLamports = await priorityFeeEstimator.getMicroLamports({ connection });
     }
 
-    await forEachLimit(eligiblePairs, env.pairConcurrency, async (pair) => {
+    const jSnap = jupiterLimiter.snapshot();
+    const ooSnap = openOceanLimiter.snapshot();
+    const effectivePairConcurrency = (() => {
+      let c = Math.max(1, Math.floor(env.pairConcurrency));
+      if (jSnap.penaltyMsRemaining > 0) c = Math.min(c, 1);
+      return Math.max(1, c);
+    })();
+    const effectiveOpenOceanEveryNTicks = (() => {
+      let n = Math.max(1, Math.floor(env.openOceanEveryNTicks));
+      if (ooSnap.penaltyMsRemaining > 0) n = Math.max(n, Math.floor(env.openOceanEveryNTicks) * 3);
+      else if (ooSnap.currentRps < ooSnap.baseRps) n = Math.max(n, Math.floor(env.openOceanEveryNTicks) * 2);
+      return Math.max(1, n);
+    })();
+    const effectiveOpenOceanNearGateBps = (() => {
+      let v = Math.max(0, Math.floor(env.openOceanJupiterNearGateBps));
+      if (ooSnap.penaltyMsRemaining > 0) v = Math.floor(v * 0.5);
+      return Math.max(0, v);
+    })();
+    autoTuneSnapshot = {
+      pairConcurrency: effectivePairConcurrency,
+      openOceanEveryNTicks: effectiveOpenOceanEveryNTicks,
+      openOceanJupiterNearGateBps: effectiveOpenOceanNearGateBps,
+      jupiterCurrentRps: jSnap.currentRps,
+      openOceanCurrentRps: ooSnap.currentRps,
+    };
+
+    await forEachLimit(eligiblePairs, effectivePairConcurrency, async (pair) => {
       if (stopRequested) return;
       if (!args.once) nextScanAtMs.set(pair.name, Date.now() + env.pollIntervalMs);
       try {
+        const now2 = Date.now();
+        const risk = upsertRiskState(pair.name, now2);
+        const hourCutoff = now2 - 60 * 60 * 1000;
+        while (risk.hourTradesMs.length && risk.hourTradesMs[0]! < hourCutoff) risk.hourTradesMs.shift();
+
+        if (pair.maxTradesPerHour !== undefined && pair.maxTradesPerHour >= 0) {
+          const limit = Math.floor(pair.maxTradesPerHour);
+          if (limit === 0) {
+            await logEvent({ ts: new Date().toISOString(), type: 'pair_limit_skip', pair: pair.name, reason: 'max_trades_per_hour=0' });
+            return;
+          }
+          if (risk.hourTradesMs.length >= limit) {
+            await logEvent({
+              ts: new Date().toISOString(),
+              type: 'pair_limit_skip',
+              pair: pair.name,
+              reason: 'max_trades_per_hour',
+              tradesLastHour: risk.hourTradesMs.length,
+              maxTradesPerHour: limit,
+            });
+            return;
+          }
+        }
+
+        if (pair.maxDailyLossA && /^\d+$/.test(pair.maxDailyLossA)) {
+          const maxLoss = BigInt(pair.maxDailyLossA);
+          if (maxLoss > 0n && risk.dailyLossAAtomic >= maxLoss) {
+            const until = nextUtcMidnightMs(now2);
+            setCooldownMs(pair.name, until);
+            await logEvent({
+              ts: new Date().toISOString(),
+              type: 'pair_limit_skip',
+              pair: pair.name,
+              reason: 'max_daily_loss',
+              dailyLossAAtomic: risk.dailyLossAAtomic.toString(),
+              maxDailyLossA: maxLoss.toString(),
+              cooldownUntil: new Date(until).toISOString(),
+            });
+            return;
+          }
+        }
+
         const state =
           pairScanStateByName.get(pair.name) ??
           ({
@@ -355,6 +483,17 @@ async function main() {
           connection,
           wallet,
           walletBalanceLamports: walletBalanceLamportsLive,
+          walletBalanceAAtomic:
+            env.dynamicAmountMode === 'token_balance'
+              ? pair.aMint === SOL_MINT
+                ? walletBalanceLamportsLive.toString()
+                : (await tokenBalanceCache.get({
+                    connection,
+                    owner: wallet.publicKey,
+                    mint: pair.aMint,
+                    ttlMs: Math.max(0, Math.floor(env.balanceRefreshMs)),
+                  }))?.amountAtomic
+              : undefined,
           quoteJupiter: cachedQuoteJupiter,
           execJupiter: rateLimitedExecJupiter,
           openOcean,
@@ -395,9 +534,9 @@ async function main() {
           jitoTipAccount: env.jitoTipAccount,
           openOceanObserveEnabled: env.openOceanObserveEnabled,
           openOceanExecuteEnabled: env.openOceanExecuteEnabled,
-          openOceanEveryNTicks: env.openOceanEveryNTicks,
+          openOceanEveryNTicks: effectiveOpenOceanEveryNTicks,
           openOceanJupiterGateBps: env.openOceanJupiterGateBps,
-          openOceanJupiterNearGateBps: env.openOceanJupiterNearGateBps,
+          openOceanJupiterNearGateBps: effectiveOpenOceanNearGateBps,
           openOceanSignaturesEstimate: env.openOceanSignaturesEstimate,
           feeConversionCacheTtlMs: env.feeConversionCacheTtlMs,
           jup429CooldownMs: env.jup429CooldownMs,
@@ -407,6 +546,7 @@ async function main() {
           dynamicAmountBps: env.dynamicAmountBps,
           dynamicAmountMinAtomic: env.dynamicAmountMinAtomic,
           dynamicAmountMaxAtomic: env.dynamicAmountMaxAtomic,
+          dynamicAmountTokenReserveAtomic: env.dynamicAmountTokenReserveAtomic,
           pair,
           useRustCalc: env.useRustCalc,
           rustCalcPath: env.rustCalcPath,
@@ -414,14 +554,32 @@ async function main() {
         });
         consecutiveErrors = 0;
         if (pair.cooldownMs > 0 && result.kind !== 'skipped') {
-          cooldowns.set(pair.name, Date.now() + pair.cooldownMs);
+          setCooldownMs(pair.name, Date.now() + pair.cooldownMs);
+        }
+        if (result.kind === 'executed') {
+          risk.hourTradesMs.push(Date.now());
+
+          const pnl = result.pnl;
+          if (pnl?.deltaAAtomic && /^\-?\d+$/.test(pnl.deltaAAtomic)) {
+            try {
+              const deltaA = BigInt(pnl.deltaAAtomic);
+              if (deltaA < 0n) {
+                risk.dailyLossAAtomic += -deltaA;
+                if (pair.cooldownOnLossMs && pair.cooldownOnLossMs > 0) {
+                  setCooldownMs(pair.name, Date.now() + Math.max(0, Math.floor(pair.cooldownOnLossMs)));
+                }
+              }
+            } catch {
+              // ignore pnl parse errors
+            }
+          }
         }
       } catch (error) {
         totalErrors += 1;
         consecutiveErrors += 1;
 
         if (pair.cooldownMs > 0) {
-          cooldowns.set(pair.name, Date.now() + pair.cooldownMs);
+          setCooldownMs(pair.name, Date.now() + pair.cooldownMs);
         }
         await logEvent({ ts: new Date().toISOString(), type: 'error', pair: pair.name, error: String(error) });
         console.error(JSON.stringify({ ts: new Date().toISOString(), pair: pair.name, error: String(error) }, null, 2));

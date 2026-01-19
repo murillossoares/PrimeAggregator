@@ -10,7 +10,7 @@ const SolanaCommitmentSchema = z.enum(['processed', 'confirmed', 'finalized']);
 const TriggerStrategySchema = z.enum(['immediate', 'avg-window', 'vwap', 'bollinger']);
 const TriggerAmountModeSchema = z.enum(['all', 'rotate', 'fixed']);
 const JupiterExecutionProviderSchema = z.enum(['swap', 'ultra']);
-const DynamicAmountModeSchema = z.enum(['off', 'sol_balance']);
+const DynamicAmountModeSchema = z.enum(['off', 'sol_balance', 'token_balance']);
 
 function parseBoolean(value: string | undefined, defaultValue: boolean) {
   if (value === undefined) return defaultValue;
@@ -114,6 +114,7 @@ export function getEnv() {
   const dynamicAmountBps = parseIntOr(process.env.DYNAMIC_AMOUNT_A_BPS, 0);
   const dynamicAmountMinAtomic = parseIntOr(process.env.DYNAMIC_AMOUNT_A_MIN_ATOMIC, 0);
   const dynamicAmountMaxAtomic = parseIntOr(process.env.DYNAMIC_AMOUNT_A_MAX_ATOMIC, 0);
+  const dynamicAmountTokenReserveAtomic = parseIntOr(process.env.DYNAMIC_AMOUNT_A_TOKEN_RESERVE_ATOMIC, 0);
 
   const jupSwapBaseUrl = normalizeHttpBaseUrl(process.env.JUP_SWAP_BASE_URL, 'https://api.jup.ag');
   const jupQuoteBaseUrl = normalizeHttpBaseUrl(process.env.JUP_QUOTE_BASE_URL, jupSwapBaseUrl);
@@ -230,6 +231,7 @@ export function getEnv() {
     dynamicAmountBps,
     dynamicAmountMinAtomic,
     dynamicAmountMaxAtomic,
+    dynamicAmountTokenReserveAtomic,
     jupSwapBaseUrl,
     jupQuoteBaseUrl,
     jupUltraBaseUrl,

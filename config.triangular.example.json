@@ -7,12 +7,18 @@
       "cMint": "<REPLACE_WITH_MINT>",
       "amountA": "1000000",
       "amountASteps": ["500000", "1000000", "2000000"],
+      "minNotionalA": "500000",
       "slippageBps": 50,
       "slippageBpsLeg2": 100,
       "slippageBpsLeg3": 100,
       "minProfitA": "0",
       "minProfitBps": 25,
-      "cooldownMs": 1500
+      "cooldownMs": 1500,
+      "cooldownOnLossMs": 60000,
+      "maxTradesPerHour": 60,
+      "maxDailyLossA": "500000",
+      "maxPriceImpactBps": 150,
+      "maxRouteHops": 4
     }
   ]
 }

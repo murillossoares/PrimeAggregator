@@ -7,13 +7,10 @@ import type { JupiterClient } from '../jupiter/types.js';
 import type { OpenOceanClient } from '../openocean/client.js';
 import type { LookupTableCache } from '../solana/lookupTableCache.js';
 import type { ProviderCircuitBreaker } from '../lib/circuitBreaker.js';
-import { executeCandidate } from './executor.js';
+import { executeCandidate, type ExecutionResult } from './executor.js';
 import { scanPair } from './scanner.js';
 
-type ScanResult = {
-  kind: 'skipped' | 'built' | 'simulated' | 'executed';
-  reason?: string;
-};
+type ScanResult = ExecutionResult;
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -26,6 +23,7 @@ export async function scanAndMaybeExecute(params: {
   connection: Connection;
   wallet: Keypair;
   walletBalanceLamports: number;
+  walletBalanceAAtomic?: string;
   quoteJupiter: Extract<JupiterClient, { kind: 'swap-v1' } | { kind: 'v6' }>;
   execJupiter: JupiterClient;
   openOcean?: OpenOceanClient;
@@ -74,10 +72,11 @@ export async function scanAndMaybeExecute(params: {
   jup429CooldownMs: number;
   openOcean429CooldownMs: number;
   minBalanceLamports: number;
-  dynamicAmountMode?: 'off' | 'sol_balance';
+  dynamicAmountMode?: 'off' | 'sol_balance' | 'token_balance';
   dynamicAmountBps?: number;
   dynamicAmountMinAtomic?: number;
   dynamicAmountMaxAtomic?: number;
+  dynamicAmountTokenReserveAtomic?: number;
   pair: BotPair;
   useRustCalc: boolean;
   rustCalcPath: string;
@@ -124,10 +123,14 @@ export async function scanAndMaybeExecute(params: {
   const configuredAmounts = normalizeAmountList(
     params.pair.amountASteps?.length ? params.pair.amountASteps : [params.pair.amountA],
   );
-  const eligibleAmounts =
+  const eligibleAmountsBase =
     params.pair.maxNotionalA && /^\d+$/.test(params.pair.maxNotionalA)
       ? configuredAmounts.filter((amount) => BigInt(amount) <= BigInt(params.pair.maxNotionalA as string))
       : configuredAmounts;
+  const eligibleAmounts =
+    params.pair.minNotionalA && /^\d+$/.test(params.pair.minNotionalA)
+      ? eligibleAmountsBase.filter((amount) => BigInt(amount) >= BigInt(params.pair.minNotionalA as string))
+      : eligibleAmountsBase;
   const state: PairScanState =
     params.state ??
     ({
@@ -152,14 +155,29 @@ export async function scanAndMaybeExecute(params: {
   })();
 
   function dynamicAmountOverride(): string[] | undefined {
-    if ((params.dynamicAmountMode ?? 'off') !== 'sol_balance') return undefined;
-    if (params.pair.aMint !== SOL_MINT) return undefined;
-
     const bps = Math.max(0, Math.floor(params.dynamicAmountBps ?? 0));
     if (bps <= 0) return undefined;
 
-    const reserve = BigInt(Math.max(0, Math.floor(params.minBalanceLamports)));
-    const balance = BigInt(Math.max(0, Math.floor(params.walletBalanceLamports)));
+    const mode = params.dynamicAmountMode ?? 'off';
+    const reserve =
+      mode === 'sol_balance'
+        ? BigInt(Math.max(0, Math.floor(params.minBalanceLamports)))
+        : BigInt(Math.max(0, Math.floor(params.dynamicAmountTokenReserveAtomic ?? 0)));
+    const balance = (() => {
+      if (mode === 'sol_balance') {
+        if (params.pair.aMint !== SOL_MINT) return undefined;
+        return BigInt(Math.max(0, Math.floor(params.walletBalanceLamports)));
+      }
+      if (mode === 'token_balance') {
+        const raw = params.walletBalanceAAtomic;
+        if (!raw || !/^\d+$/.test(raw)) return undefined;
+        if (params.pair.aMint === SOL_MINT) return BigInt(raw);
+        // For SPL tokens, caller must have fetched ATA balance.
+        return BigInt(raw);
+      }
+      return undefined;
+    })();
+    if (balance === undefined) return undefined;
     const spendable = balance > reserve ? balance - reserve : 0n;
     if (spendable <= 0n) return undefined;
 
@@ -174,6 +192,11 @@ export async function scanAndMaybeExecute(params: {
     if (params.pair.maxNotionalA && /^\d+$/.test(params.pair.maxNotionalA)) {
       const cap = BigInt(params.pair.maxNotionalA);
       if (cap > 0n && amount > cap) amount = cap;
+    }
+
+    if (params.pair.minNotionalA && /^\d+$/.test(params.pair.minNotionalA)) {
+      const minNotional = BigInt(params.pair.minNotionalA);
+      if (minNotional > 0n && amount < minNotional) return undefined;
     }
 
     if (amount <= 0n) return undefined;
@@ -258,6 +281,9 @@ export async function scanAndMaybeExecute(params: {
       candidates: scan.candidates.length,
       scanMs: Date.now() - scanStartedAt,
       openOceanEnabled: enableOpenOcean,
+      jupiterQuoteCalls: scan.jupiterQuoteCalls,
+      openOceanQuoteCalls: scan.openOceanQuoteCalls,
+      feeConversionQuoteCalls: scan.feeConversionQuoteCalls,
     });
 
     return scan;

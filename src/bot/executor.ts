@@ -11,13 +11,77 @@ import { buildAtomicPathTransaction } from './atomic.js';
 import { getJitoTipAccountAddress, sendBundleViaJito } from './jitoSender.js';
 import type { Candidate } from './scanner.js';
 import type { LookupTableCache } from '../solana/lookupTableCache.js';
+import { TokenBalanceCache } from '../solana/tokenBalanceCache.js';
 
-type ScanResult = {
+export type ExecutionPnl = {
+  provider: 'jupiter' | 'ultra' | 'openocean';
+  aMint: string;
+  bMint: string;
+  cMint?: string;
+  amountA: string;
+  preBalanceSolLamports: number;
+  postBalanceSolLamports: number;
+  deltaSolLamports: number;
+  preBalanceAAtomic?: string;
+  postBalanceAAtomic?: string;
+  deltaAAtomic?: string;
+  preBalanceBAtomic?: string;
+  postBalanceBAtomic?: string;
+  deltaBAtomic?: string;
+  preBalanceCAtomic?: string;
+  postBalanceCAtomic?: string;
+  deltaCAtomic?: string;
+};
+
+export type ExecutionResult = {
   kind: 'skipped' | 'built' | 'simulated' | 'executed';
   reason?: string;
+  pnl?: ExecutionPnl;
 };
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const tokenBalanceCache = new TokenBalanceCache();
+
+function parsePriceImpactBps(raw: unknown): number | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().replace('%', '');
+  if (!normalized) return undefined;
+  const n = Number.parseFloat(normalized);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+
+  // Jupiter/OpenOcean may return either:
+  // - fraction in [0..1] where 1 === 100%
+  // - percentage in [0..100]
+  if (n <= 1) return Math.round(n * 10_000);
+  if (n <= 100) return Math.round(n * 100);
+  return undefined;
+}
+
+function routeHopsFromRoutePlan(routePlan: unknown): number | undefined {
+  if (!Array.isArray(routePlan)) return undefined;
+  const hops = routePlan.length;
+  return Number.isFinite(hops) ? hops : undefined;
+}
+
+async function fetchPnlSnapshot(params: {
+  connection: Connection;
+  wallet: Keypair;
+  aMint: string;
+  bMint: string;
+  cMint?: string;
+}) {
+  const owner = params.wallet.publicKey;
+  const solLamports = await params.connection.getBalance(owner, 'confirmed');
+  const aBalance =
+    params.aMint === SOL_MINT
+      ? { amountAtomic: solLamports.toString(), decimals: 9 }
+      : await tokenBalanceCache.get({ connection: params.connection, owner, mint: params.aMint, ttlMs: 0 });
+  const bBalance = await tokenBalanceCache.get({ connection: params.connection, owner, mint: params.bMint, ttlMs: 0 });
+  const cBalance = params.cMint
+    ? await tokenBalanceCache.get({ connection: params.connection, owner, mint: params.cMint, ttlMs: 0 })
+    : undefined;
+  return { solLamports, aBalance, bBalance, cBalance };
+}
 
 function parseBooleanEnv(name: string, defaultValue: boolean) {
   const value = process.env[name];
@@ -242,7 +306,7 @@ export async function executeCandidate(params: {
   jitoFallbackRpc: boolean;
   minBalanceLamports: number;
   lookupTableCache?: LookupTableCache;
-}): Promise<ScanResult> {
+}): Promise<ExecutionResult> {
   const shouldBuild = params.best.decision.profitable || (params.mode === 'dry-run' && params.dryRunBuild);
   if (!shouldBuild) {
     await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, reason: 'not-profitable' });
@@ -268,6 +332,167 @@ export async function executeCandidate(params: {
       });
       return { kind: 'skipped', reason: 'min-balance' };
     }
+  }
+
+  const maxPriceImpactBps = params.pair.maxPriceImpactBps;
+  const maxRouteHops = params.pair.maxRouteHops;
+  if ((maxPriceImpactBps !== undefined && maxPriceImpactBps >= 0) || (maxRouteHops !== undefined && maxRouteHops > 0)) {
+    const quotes = (() => {
+      if (params.best.kind === 'triangular') return [params.best.quote1, params.best.quote2, params.best.quote3] as unknown[];
+      return [params.best.quote1, params.best.quote2] as unknown[];
+    })();
+
+    for (let i = 0; i < quotes.length; i++) {
+      const leg = i + 1;
+      const q: any = quotes[i];
+
+      if (maxPriceImpactBps !== undefined) {
+        const impactBps =
+          q && typeof q === 'object' && typeof q.priceImpactPct === 'string'
+            ? parsePriceImpactBps(q.priceImpactPct)
+            : q && typeof q === 'object' && q.raw && typeof q.raw.price_impact === 'string'
+              ? parsePriceImpactBps(q.raw.price_impact)
+              : undefined;
+
+        if (impactBps !== undefined && impactBps > maxPriceImpactBps) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'skip',
+            pair: params.pair.name,
+            reason: 'liquidity_filter',
+            filter: 'price_impact',
+            leg,
+            impactBps,
+            maxImpactBps: maxPriceImpactBps,
+          });
+          return { kind: 'skipped', reason: 'liquidity_filter' };
+        }
+      }
+
+      if (maxRouteHops !== undefined && maxRouteHops > 0) {
+        const hops =
+          q && typeof q === 'object' && 'routePlan' in q ? routeHopsFromRoutePlan(q.routePlan) : undefined;
+        if (hops !== undefined && hops > maxRouteHops) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'skip',
+            pair: params.pair.name,
+            reason: 'liquidity_filter',
+            filter: 'route_hops',
+            leg,
+            hops,
+            maxHops: maxRouteHops,
+          });
+          return { kind: 'skipped', reason: 'liquidity_filter' };
+        }
+      }
+    }
+  }
+
+  const pnlMints = {
+    aMint: params.pair.aMint,
+    bMint: params.pair.bMint,
+    cMint: params.pair.cMint,
+  };
+  let preSnapshot:
+    | Awaited<ReturnType<typeof fetchPnlSnapshot>>
+    | undefined;
+  if (params.mode === 'live') {
+    try {
+      preSnapshot = await fetchPnlSnapshot({ connection: params.connection, wallet: params.wallet, ...pnlMints });
+    } catch {
+      preSnapshot = undefined;
+    }
+  }
+
+  function asBigIntOrUndefined(value: string | undefined) {
+    if (!value) return undefined;
+    if (!/^\d+$/.test(value)) return undefined;
+    try {
+      return BigInt(value);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function finalizePnl(provider: ExecutionPnl['provider']): Promise<ExecutionPnl | undefined> {
+    if (!preSnapshot) return undefined;
+    try {
+      const postSnapshot = await fetchPnlSnapshot({ connection: params.connection, wallet: params.wallet, ...pnlMints });
+
+      const preA = preSnapshot.aBalance?.amountAtomic;
+      const postA = postSnapshot.aBalance?.amountAtomic;
+      const preB = preSnapshot.bBalance?.amountAtomic;
+      const postB = postSnapshot.bBalance?.amountAtomic;
+      const preC = preSnapshot.cBalance?.amountAtomic;
+      const postC = postSnapshot.cBalance?.amountAtomic;
+
+      const deltaA =
+        asBigIntOrUndefined(preA) !== undefined && asBigIntOrUndefined(postA) !== undefined
+          ? (BigInt(postA as string) - BigInt(preA as string)).toString()
+          : undefined;
+      const deltaB =
+        asBigIntOrUndefined(preB) !== undefined && asBigIntOrUndefined(postB) !== undefined
+          ? (BigInt(postB as string) - BigInt(preB as string)).toString()
+          : undefined;
+      const deltaC =
+        asBigIntOrUndefined(preC) !== undefined && asBigIntOrUndefined(postC) !== undefined
+          ? (BigInt(postC as string) - BigInt(preC as string)).toString()
+          : undefined;
+
+      return {
+        provider,
+        aMint: pnlMints.aMint,
+        bMint: pnlMints.bMint,
+        cMint: pnlMints.cMint,
+        amountA: params.best.amountA,
+        preBalanceSolLamports: preSnapshot.solLamports,
+        postBalanceSolLamports: postSnapshot.solLamports,
+        deltaSolLamports: postSnapshot.solLamports - preSnapshot.solLamports,
+        preBalanceAAtomic: preA,
+        postBalanceAAtomic: postA,
+        deltaAAtomic: deltaA,
+        preBalanceBAtomic: preB,
+        postBalanceBAtomic: postB,
+        deltaBAtomic: deltaB,
+        preBalanceCAtomic: preC,
+        postBalanceCAtomic: postC,
+        deltaCAtomic: deltaC,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function emitPnl(params2: { provider: ExecutionPnl['provider']; extra?: Record<string, unknown> }) {
+    const pnl = await finalizePnl(params2.provider);
+    if (!pnl) return undefined;
+
+    const base = {
+      ts: new Date().toISOString(),
+      type: 'pnl',
+      pair: params.pair.name,
+      ...pnl,
+      ...(params2.extra ?? {}),
+    } as const;
+    await params.logEvent(base);
+
+    try {
+      if (pnl.deltaBAtomic && /^\-?\d+$/.test(pnl.deltaBAtomic) && BigInt(pnl.deltaBAtomic) > 0n) {
+        await params.logEvent({
+          ts: new Date().toISOString(),
+          type: 'pnl_leftover',
+          pair: params.pair.name,
+          mint: pnl.bMint,
+          deltaAtomic: pnl.deltaBAtomic,
+          ...(params2.extra ?? {}),
+        });
+      }
+    } catch {
+      // ignore leftover parse errors
+    }
+
+    return pnl;
   }
 
   const decisionLogQuotes =
@@ -330,6 +555,14 @@ export async function executeCandidate(params: {
         });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'openocean',
+            status: 429,
+            where: 'swap',
+          });
           breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
           await params.logEvent({
             ts: new Date().toISOString(),
@@ -362,6 +595,14 @@ export async function executeCandidate(params: {
             });
           } catch (e) {
             if (breaker && isHttp429(e)) {
+              await params.logEvent({
+                ts: new Date().toISOString(),
+                type: 'rate_limit',
+                pair: params.pair.name,
+                provider: 'openocean',
+                status: 429,
+                where: 'swap',
+              });
               breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
               return undefined;
             }
@@ -446,6 +687,14 @@ export async function executeCandidate(params: {
         });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'openocean',
+            status: 429,
+            where: 'swap',
+          });
           breaker.open(openOceanBreakerKey, openOcean429CooldownMs);
           await params.logEvent({
             ts: new Date().toISOString(),
@@ -500,7 +749,8 @@ export async function executeCandidate(params: {
 
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, provider: 'openocean', sig1, sig2 }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, provider: 'openocean', sig1, sig2 });
-    return { kind: 'executed' };
+    const pnl = await emitPnl({ provider: 'openocean', extra: { sig1, sig2 } });
+    return { kind: 'executed', pnl };
   }
 
   if (params.execJupiter.kind === 'ultra') {
@@ -569,6 +819,14 @@ export async function executeCandidate(params: {
         });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'ultra',
+            status: 429,
+            where: 'order',
+          });
           breaker.open(ultraBreakerKey, jup429CooldownMs);
           await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
           return undefined;
@@ -600,6 +858,14 @@ export async function executeCandidate(params: {
         });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'ultra',
+            status: 429,
+            where: 'order',
+          });
           breaker.open(ultraBreakerKey, jup429CooldownMs);
           await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
           return undefined;
@@ -670,6 +936,14 @@ export async function executeCandidate(params: {
         return await ultra.execute({ signedTransaction: signed1, requestId: o1.requestId });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'ultra',
+            status: 429,
+            where: 'execute',
+          });
           breaker.open(ultraBreakerKey, jup429CooldownMs);
           await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
           return undefined;
@@ -712,6 +986,14 @@ export async function executeCandidate(params: {
         return await ultra.execute({ signedTransaction: signed2, requestId: o2.requestId });
       } catch (e) {
         if (breaker && isHttp429(e)) {
+          await params.logEvent({
+            ts: new Date().toISOString(),
+            type: 'rate_limit',
+            pair: params.pair.name,
+            provider: 'ultra',
+            status: 429,
+            where: 'execute',
+          });
           breaker.open(ultraBreakerKey, jup429CooldownMs);
           await params.logEvent({ ts: new Date().toISOString(), type: 'skip', pair: params.pair.name, ultra: true, reason: 'rate-limited' });
           return undefined;
@@ -747,7 +1029,8 @@ export async function executeCandidate(params: {
     }
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, ultra: true, exec1, exec2 }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, ultra: true, exec1, exec2 });
-    return { kind: 'executed' };
+    const pnl = await emitPnl({ provider: 'ultra', extra: { exec1Sig: exec1.signature, exec2Sig: exec2.signature, exec1, exec2 } });
+    return { kind: 'executed', pnl };
   }
 
   if (params.best.kind === 'triangular' && params.executionStrategy !== 'atomic') {
@@ -879,7 +1162,8 @@ export async function executeCandidate(params: {
         });
         console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, atomic: true, jito: true, bundleId, signature, fallbackRpc: true, rpcSig }));
         await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, atomic: true, jito: true, bundleId, signature, fallbackRpc: true, rpcSig });
-        return { kind: 'executed' };
+        const pnl = await emitPnl({ provider: 'jupiter', extra: { signature, rpcSig, atomic: true, jito: true, bundleId, fallbackRpc: true } });
+        return { kind: 'executed', pnl };
       }
 
       try {
@@ -893,13 +1177,15 @@ export async function executeCandidate(params: {
 
       console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, atomic: true, jito: true, bundleId, signature }));
       await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, atomic: true, jito: true, bundleId, signature });
-      return { kind: 'executed' };
+      const pnl = await emitPnl({ provider: 'jupiter', extra: { signature, atomic: true, jito: true, bundleId } });
+      return { kind: 'executed', pnl };
     }
 
     const sentSignature = await sendSignedTx({ connection: params.connection, tx: built.tx, lastValidBlockHeight: built.lastValidBlockHeight });
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, atomic: true, signature: sentSignature }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, atomic: true, signature: sentSignature });
-    return { kind: 'executed' };
+    const pnl = await emitPnl({ provider: 'jupiter', extra: { signature: sentSignature, atomic: true } });
+    return { kind: 'executed', pnl };
   }
 
   if (params.best.kind === 'triangular') {
@@ -939,7 +1225,8 @@ export async function executeCandidate(params: {
     const sig2 = await signAndSendV6Swap({ connection: params.connection, wallet: params.wallet, swapTransactionB64: swap2.swapTransaction, lastValidBlockHeight: swap2.lastValidBlockHeight });
     console.log(JSON.stringify({ ts: new Date().toISOString(), pair: params.pair.name, sig1, sig2 }));
     await params.logEvent({ ts: new Date().toISOString(), type: 'executed', pair: params.pair.name, sig1, sig2 });
-    return { kind: 'executed' };
+    const pnl = await emitPnl({ provider: 'jupiter', extra: { sig1, sig2, sequential: true } });
+    return { kind: 'executed', pnl };
   }
 
   if (!params.dryRunSimulate) {

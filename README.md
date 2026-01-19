@@ -236,9 +236,11 @@ Ajustes do modo `bollinger`:
 - `QUOTE_CACHE_TTL_MS` cache curto de quotes (Swap v1).
 - `FEE_CONVERSION_CACHE_TTL_MS` cache de conversao `SOL -> aMint` usado para estimar fees em unidades de A (quando `aMint!=SOL`).
 - `PAIR_SCHEDULER_SPREAD` distribui pares no tempo (evita bursts de HTTP quando voce tem muitos pares).
-- `BALANCE_REFRESH_MS` controla com que frequencia o bot atualiza o saldo SOL via RPC (usado pelo modo de amount dinamico).
+- `BALANCE_REFRESH_MS` controla com que frequencia o bot atualiza saldo (SOL e, quando preciso, tokens SPL) via RPC.
 - `DYNAMIC_AMOUNT_A_MODE=sol_balance` calcula `amountA` dinamicamente como `% do saldo SOL disponivel` (saldo - `MIN_BALANCE_LAMPORTS`) e sobrescreve `amountASteps` (somente para pares com `aMint=SOL`).
+- `DYNAMIC_AMOUNT_A_MODE=token_balance` calcula `amountA` como `% do saldo da ATA do aMint` (menos `DYNAMIC_AMOUNT_A_TOKEN_RESERVE_ATOMIC`) e sobrescreve `amountASteps` (para `aMint!=SOL`).
 - `DYNAMIC_AMOUNT_A_BPS` define o % (em bps) do saldo disponivel (ex: `2000` = 20%).
+- `DYNAMIC_AMOUNT_A_TOKEN_RESERVE_ATOMIC` define a reserva (em unidades atômicas de A) quando `DYNAMIC_AMOUNT_A_MODE=token_balance`.
 - `JUP_RPS` / `JUP_BURST` limitam RPS global da Jupiter (quote + exec) via token-bucket (ex: `JUP_RPS=1` para free tier).
 - `JUP_MIN_INTERVAL_MS` / `JUP_BACKOFF_*` seguem valendo para backoff/cooldown entre tentativas.
 - `JUP_ADAPTIVE_PENALTY_MS` reduz RPS temporariamente ao detectar `HTTP 429` (auto-tuning).
@@ -253,7 +255,7 @@ Ajustes do modo `bollinger`:
 
 - `HEALTHCHECK_PORT` expõe:
   - `GET /healthz` => `200 ok`
-  - `GET /metrics` => snapshot JSON (sem segredos) dos limiters.
+  - `GET /metrics` => snapshot JSON (sem segredos) com limiters + mA©tricas + alertas.
 
 ## Referência de configuração
 
@@ -267,14 +269,15 @@ As referências abaixo refletem o schema real validado em runtime:
 Hoje o bot já obtém/usa dinamicamente:
 
 - `pubkey` do trader (derivado de `WALLET_SECRET_KEY`) e logado no startup.
-- `saldo SOL` via RPC (usado para logs e para `DYNAMIC_AMOUNT_A_MODE=sol_balance`).
+- `saldo SOL` via RPC (usado para logs, para `DYNAMIC_AMOUNT_A_MODE=sol_balance` e para P&L real por execucao).
+- Saldos SPL (ATA) por `aMint`/`bMint`/`cMint`:
+  - Para `DYNAMIC_AMOUNT_A_MODE=token_balance` (amountA dinamico quando `aMint!=SOL`).
+  - Para P&L real por execucao e deteccao de sobras do token intermediario.
 - Criação de ATAs para os mints do `config.json` (via `--setup-wallet` ou `AUTO_SETUP_WALLET=true`).
 
-Também é possível (mas **não está implementado** como “auto-config” por padrão) derivar:
+Também é possível (mas não está implementado como “auto-config” por padrão) derivar:
 
-- Saldos de tokens SPL (por `aMint`/`bMint`/`cMint`) para:
-  - Ajustar `amountA` quando `aMint != SOL` (modo `token_balance` futuro).
-  - Definir `maxNotionalA` automaticamente para não tentar quote acima do saldo.
+- Definir `maxNotionalA` automaticamente para não tentar quote acima do saldo.
 - Decimals/símbolo (metadata do mint) para mostrar `amountA` em unidades humanas (hoje tudo é “atomic” no config).
 - Buffer de rent/ATA mais preciso por simulação ou leitura de contas (hoje é estimado por `RENT_BUFFER_LAMPORTS`).
 
@@ -345,13 +348,14 @@ Também é possível (mas **não está implementado** como “auto-config” por
 - `PAIR_CONCURRENCY` (default `2`) - número de pares em paralelo.
 - `PAIR_SCHEDULER_SPREAD` (default `true`) - distribui pares dentro de `POLL_INTERVAL_MS` para evitar burst.
 
-**Amount dinâmico (opcional; somente `aMint=SOL`)**
+**Amount dinâmico (opcional)**
 
-- `BALANCE_REFRESH_MS` (default `2000`) - TTL do cache de saldo SOL.
-- `DYNAMIC_AMOUNT_A_MODE` (default `off`) - `off|sol_balance`.
+- `BALANCE_REFRESH_MS` (default `2000`) - TTL do cache de saldo (SOL + SPL quando necessário).
+- `DYNAMIC_AMOUNT_A_MODE` (default `off`) - `off|sol_balance|token_balance`.
 - `DYNAMIC_AMOUNT_A_BPS` (default `0`) - % do saldo disponível (bps) a usar como `amountA` (ex: `2000` = 20%).
 - `DYNAMIC_AMOUNT_A_MIN_ATOMIC` (default `0`) - piso para o `amountA` calculado.
 - `DYNAMIC_AMOUNT_A_MAX_ATOMIC` (default `0`) - teto para o `amountA` calculado.
+- `DYNAMIC_AMOUNT_A_TOKEN_RESERVE_ATOMIC` (default `0`) - reserva em unidades atômicas de A quando `token_balance`.
 
 **Estimativas de fee (custo)**
 
@@ -468,7 +472,7 @@ Campos de cada `pair`:
 - `cMint` (string, opcional) - se presente, ativa modo triangular `A->B->C->A`.
 - `amountA` (string numérica, obrigatório) - tamanho padrão em unidades atômicas (SOL = lamports).
 - `amountASteps` (array de strings numéricas, opcional) - tamanhos alternativos para scan.
-  - Observação: se `DYNAMIC_AMOUNT_A_MODE=sol_balance`, esse campo é ignorado (override).
+  - Observação: se `DYNAMIC_AMOUNT_A_MODE=sol_balance|token_balance`, esse campo é ignorado (override).
 - `slippageBps` (int 1..5000, default `50`) - slippage global em bps.
 - `slippageBpsLeg1|2|3` (int 1..5000, opcional) - slippage específico por perna (triangular usa `Leg3`).
 - `includeDexes` (array de strings, opcional) - filtro de venues para quote da Jupiter.
@@ -476,7 +480,13 @@ Campos de cada `pair`:
 - `minProfitA` (string numérica, default `0`) - lucro mínimo absoluto (em unidades atômicas de A), já considerando fees estimados.
 - `minProfitBps` (int 0..10000, opcional) - lucro mínimo relativo em bps do notional; o bot usa `max(minProfitA, amountA*bps/10000)`.
 - `cooldownMs` (int >=0, default `0`) - cooldown do par após um scan/exec (ajuda a respeitar rate limit).
+- `cooldownOnLossMs` (int >=0, opcional) - cooldown extra quando uma execução fechar com P&L negativo.
+- `maxTradesPerHour` (int >=0, opcional) - limita execuções por hora (por par).
+- `maxDailyLossA` (string numérica, opcional) - loss máximo diário (somente perdas; em unidades atômicas de A).
+- `minNotionalA` (string numérica, opcional) - bloqueia trades abaixo deste notional (poeira).
 - `maxNotionalA` (string numérica, opcional) - limita o `amountA` máximo aceito para aquele par.
+- `maxPriceImpactBps` (int 0..10000, opcional) - filtro de liquidez; bloqueia execução se price impact for alto.
+- `maxRouteHops` (int 1..64, opcional) - filtro de qualidade de rota; bloqueia execução se a rota tiver muitos hops.
 - `computeUnitLimit` (int >=1, opcional) - override por par.
 - `computeUnitPriceMicroLamports` (int >=0, opcional) - override por par.
 - `baseFeeLamports` (int >=0, opcional) - override por par.
